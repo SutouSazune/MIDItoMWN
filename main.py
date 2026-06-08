@@ -23,7 +23,7 @@ MW_SYNTH = {
 
 MW_ELECTRONIC = {
     "Guitar Bass Điện": 0, "Pluck Synth": 1, "Stylophone": 3,
-    "Bell Điện Tử": 5, "Harpsichord": 7
+    "Chuông Điện Tử": 5, "Harpsichord": 7
 }
 
 MW_DRUMS = {
@@ -113,9 +113,13 @@ class MiniWorldConverterApp(ctk.CTk):
             "Piano": 0, "Guitar": 27, "Harp": 46, "Violin": 45, "Trumpet": 56,
             "Recorder": 74, "Oud": 24, "Guitar Mộc": 24,
             "Guitar Bass Điện": 33, "Pluck Synth": 84, "Stylophone": 80,
-            "Bell Điện Tử": 10, "Harpsichord": 6,
+            "Chuông Điện Tử": 10, "Harpsichord": 6,
         }
         self.mw_channel_programs = {}
+        self.mw_drum_to_gm_note = {
+            "Bass": 36, "Floor tom": 41, "Tom-tom": 45, "Lẫy": 38,
+            "Hi-hat (đóng)": 42, "Chũm choẹ trung": 51, "Chũm choẹ to": 49, "Jam-block": 76
+        }
         self._sound_gen_thread = None
         self.transpose_semitones = 0
         
@@ -303,7 +307,7 @@ class MiniWorldConverterApp(ctk.CTk):
                 elif "harpsichord" in p_name or "clav" in p_name:
                     combo.set("⚡ Điện tử: Harpsichord (Gõ 7)")
                 elif any(x in p_name for x in ["bell", "glockenspiel", "celesta", "music box", "vibraphone", "xylophone", "tubular"]):
-                    combo.set("⚡ Điện tử: Bell Điện Tử (Gõ 5)")
+                    combo.set("⚡ Điện tử: Chuông Điện Tử (Gõ 5)")
                 elif "square" in p_name or "calliope" in p_name:
                     combo.set("⚡ Điện tử: Stylophone (Gõ 3)")
                 elif any(x in p_name for x in ["synth", "pad", "lead", "charang"]):
@@ -652,8 +656,11 @@ class MiniWorldConverterApp(ctk.CTk):
                 channel = note_info['channel']
                 
                 if inst_type == "Drum":
-                    self.midi_out.note_on(note, 100, 9) # Kênh 9 cho trống
-                    notes_to_turn_off.append((note, 9))
+                    base_name = inst_name.split('(')[0].strip().replace('🥁 ', '')
+                    velocity = 127 if base_name == "Jam-block" else 100
+                    playback_note = self.mw_drum_to_gm_note.get(base_name, note)
+                    self.midi_out.note_on(playback_note, velocity, 9) # Kênh 9 cho trống
+                    notes_to_turn_off.append((playback_note, 9))
                 else:
                     base_name = inst_name.split('(')[0].strip().replace('🎹 ', '').replace('⚡ ', '')
                     gm_program = self.mw_instrument_to_gm.get(base_name, 0)
