@@ -469,11 +469,34 @@ class MiniWorldConverterApp(ctk.CTk):
                 if gi < len(groups) - 1:
                     d_ms = target_notes[groups[gi+1][0]]['time'] - time_sync
                     w_ms = max(0, (d_ms * HE_SO_TOC_DO) - 50)
-                    if w_ms < 30: wire_str = "Sát nhau"
-                    elif w_ms < 100: wire_str = "1 PL"
-                    else: # Tính toán mức dây dựa trên thời gian
-                        level = max(0, 5 - (max(1, int(round(w_ms / 150.0))) - 1))
+
+                    # Ngưỡng w_ms mà tại đó Mức 0 bắt đầu
+                    MUC0_START_W_MS = 825 
+
+                    if w_ms < 30:
+                        wire_str = "Sát nhau"
+                    elif w_ms < 100:
+                        wire_str = "1 PL"
+                    elif w_ms < MUC0_START_W_MS: # Logic cũ cho Mức 5 -> 1
+                        ticks = int(round(w_ms / 150.0))
+                        level = 5 - (ticks - 1)
                         wire_str = f"Mức {level}"
+                    else: # Logic mới để phân rã các khoảng trễ rất dài (>= Mức 0)
+                        MUC0_UNIT_VALUE = MUC0_START_W_MS
+                        
+                        num_muc0 = int(w_ms // MUC0_UNIT_VALUE)
+                        rem_w_ms = w_ms % MUC0_UNIT_VALUE
+                        
+                        parts = [f"{num_muc0} Mức 0"] if num_muc0 > 0 else []
+                        
+                        # Phân loại phần dư (rem_w_ms sẽ luôn < 825)
+                        if rem_w_ms >= 100: # Phần dư là một Mức (5 -> 1)
+                            rem_ticks = int(round(rem_w_ms / 150.0))
+                            parts.append(f"1 Mức {5 - (rem_ticks - 1)}")
+                        elif rem_w_ms >= 30: # Phần dư là 1 PL
+                            parts.append("1 PL")
+                            
+                        wire_str = " + ".join(parts) if parts else "Mức 0"
 
                 self.active_blueprint.append({
                     "id": f"{gi+1:03d}", "sync_time": time_sync,
