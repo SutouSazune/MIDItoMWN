@@ -450,7 +450,7 @@ class MiniWorldConverterApp(ctk.CTk):
                         while note_val < 48: note_val += 12 # Transpose up to C3
                         while note_val > 83: note_val -= 12 # Transpose down to B5
                         tap = note_val % 12
-                        b = "Thấp" if note_val <= 59 else "Trung" if note_val <= 71 else "Cao"
+                        b = "Trầm" if note_val <= 59 else "Trung" if note_val <= 71 else "Cao"
                         inst_data[inst_name]["notes_raw"].append(f"Khối {b}: {tap}")
                         inst_data[inst_name]["notes"].append({'midi': note_val, 'channel': n['channel']})
                     else:
