@@ -2,8 +2,6 @@
 
 Một công cụ được thiết kế để giúp người chơi Mini World: Block Art dễ dàng chuyển đổi các file nhạc MIDI thành các bản thiết kế (blueprint) chi tiết để xây dựng trong game.
 
-**Tác giả:** ft.LKL
-
 ## Tính Năng Nổi Bật
 
 -   **Nhập File MIDI:** Dễ dàng tải lên các file có định dạng `.mid` hoặc `.midi`.
@@ -26,7 +24,7 @@ Một công cụ được thiết kế để giúp người chơi Mini World: Bl
     -   Cho phép ẩn/hiện các nhạc cụ không mong muốn khỏi sơ đồ cuối cùng.
 
 ## Hướng Dẫn Sử Dụng
-*** Để hiểu thêm về Khối nhạc của Miniworld, hãy ghé qua wiki của dự án**
+** Để hiểu thêm về Khối nhạc của Miniworld, hãy ghé qua wiki của dự án**
 1.  Chạy file `main.py` để khởi động ứng dụng.
 2.  Tại màn hình chính, nhấn nút **"📁 Chọn File"** và chọn một file MIDI từ máy tính của bạn.
 3.  Màn hình **"CẤU HÌNH NHẠC CỤ"** sẽ hiện ra. Tại đây:
