@@ -412,7 +412,7 @@ class MiniWorldConverterApp(ctk.CTk):
         self.tab_vert   = self.tabview.add("Sơ đồ Dọc")
         self.tab_horz   = self.tabview.add("Sơ đồ Ngang")
         self.tab_step   = self.tabview.add("Sơ đồ Đơn")
-        self.tab_stats  = self.tabview.add("📊 Thống kê")
+        self.tab_stats  = self.tabview.add("Thống kê")
         self.tabview.pack(fill="both", expand=True, padx=10, pady=5)
         
         # Tab 1: Sơ đồ Dọc
