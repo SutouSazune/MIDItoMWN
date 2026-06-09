@@ -719,10 +719,8 @@ class MiniWorldConverterApp(ctk.CTk):
             threading.Thread(target=t_off, daemon=True).start()
 
     def on_item_click(self, e=None, idx=None):
-        if idx is not None and 0 <= idx < len(self.active_blueprint):
-            self.current_step_index = idx; self.apply_sync_visuals(); self.play_mixed_instruments(self.active_blueprint[idx]['instruments'])
-            try: self.slider_time.set(self.active_blueprint[idx]['sync_time'])
-            except: pass
+        if idx is not None:
+            self.jump_to_step(idx, auto_play_note=True)
 
     def on_txt_vert_click(self, e):
         ic = int(self.txt_vert.index(f"@{e.x},{e.y}").split('.')[0])
