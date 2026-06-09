@@ -125,7 +125,8 @@ class BlueprintGenerator:
                 if inm not in inst_d: inst_d[inm] = {"notes_raw": [], "notes": [], "type": minfo["type"], "name": minfo["name"]}
                 if minfo["type"] == "Drum":
                     inst_d[inm]["notes_raw"].append(f"[Trống] Gõ {minfo['tap']}")
-                    inst_d[inm]["notes"].append({'midi': mw_dr_gm.get(minfo['name'], 60), 'channel': 9})
+                    # Bổ sung lưu trữ 'velocity' để click nghe thử đúng lực
+                    inst_d[inm]["notes"].append({'midi': mw_dr_gm.get(minfo['name'], 60), 'channel': 9, 'og_midi': n['note'], 'program': n.get('program', 0), 'velocity': n.get('velocity', 100)})
                 else:
                     fn = n['note'] + trans_semi
                     mwn = fn
@@ -133,10 +134,10 @@ class BlueprintGenerator:
                     while mwn > 83: mwn -= 12
                     b = "Trầm" if mwn <= 59 else "Trung" if mwn <= 71 else "Cao"
                     inst_d[inm]["notes_raw"].append(f"Khối {b}: {mwn % 12}")
-                    inst_d[inm]["notes"].append({'midi': fn, 'channel': n['channel']})
+                    inst_d[inm]["notes"].append({'midi': fn, 'channel': n['channel'], 'og_midi': fn, 'program': n.get('program', 0), 'velocity': n.get('velocity', 100)})
             for nm in inst_d:
                 inst_d[nm]["notes_raw"] = list(dict.fromkeys(inst_d[nm]["notes_raw"]))
-                inst_d[nm]["notes"] = list({(d['midi'], d['channel']): d for d in inst_d[nm]["notes"]}.values())
+                inst_d[nm]["notes"] = list({(d['og_midi'], d['channel']): d for d in inst_d[nm]["notes"]}.values())
             wstr = "[HẾT BÀI]"
             if gi < len(gps) - 1:
                 w_ms = max(0, ((tg_notes[gps[gi+1][0]]['time'] - t_sync) * HE_SO_TOC_DO) - 50)
@@ -650,18 +651,27 @@ class MiniWorldConverterApp(ctk.CTk):
     # --- AUDIO & ĐIỀU KHIỂN ---
     def play_mixed_instruments(self, inst_dict):
         if not self.has_midi_output or not inst_dict: return
-        if self.mw_channel_programs.get(15) != 117: self.midi_out.set_instrument(117, 15); self.mw_channel_programs[15] = 117
+        is_mw_mode = (self.current_preview_mode == "🎹 Mini World")
         n_off = []
         for i_nm, d in inst_dict.items():
             for n_info in d['notes']:
-                n, ch, bn = n_info['midi'], n_info['channel'], d.get('name')
+                n = n_info.get('og_midi', n_info['midi'])
+                ch = n_info['channel']
+                prog = n_info.get('program', 0)
+                vel = n_info.get('velocity', 100)  # Lấy lực đánh gốc
+                bn = d.get('name')
+                
                 if not bn: continue
-                if d.get("type", "Synth") == "Drum":
-                    self.midi_out.note_on(n, 127 if bn == "Jam-block" else 100, 9); n_off.append((n, 9))
+                if d.get("type", "Synth") == "Drum" or ch == 9:
+                    self.midi_out.note_on(n, vel, 9)
+                    n_off.append((n, 9))
                 else:
-                    gmp = self.mw_instrument_to_gm.get(bn, 0)
-                    if self.mw_channel_programs.get(ch) != gmp: self.midi_out.set_instrument(gmp, ch); self.mw_channel_programs[ch] = gmp
-                    self.midi_out.note_on(n, 100, ch); n_off.append((n, ch))
+                    target_prog = self.mw_instrument_to_gm.get(bn, 0) if is_mw_mode else prog
+                    if self.mw_channel_programs.get(ch) != target_prog: 
+                        self.midi_out.set_instrument(target_prog, ch)
+                        self.mw_channel_programs[ch] = target_prog
+                    self.midi_out.note_on(n, vel, ch)
+                    n_off.append((n, ch))
         if n_off:
             def t_off(): time.sleep(0.15); [self.midi_out.note_off(nt, 0, c) for nt, c in n_off]
             threading.Thread(target=t_off, daemon=True).start()
@@ -719,10 +729,11 @@ class MiniWorldConverterApp(ctk.CTk):
             for e in self.full_midi_events:
                 if e['time'] >= self.playback_offset: break
                 om = e['msg']
-                if om.type in ['program_change', 'control_change', 'pitchwheel'] and f"{om.channel}_ALL" in self.channel_map:
+                # Giải phóng điều kiện kẹp channel_map để mọi hiệu ứng CC đều đi qua được synth
+                if om.type in ['program_change', 'control_change', 'pitchwheel']:
                     try:
                         if om.type == 'program_change' and self.current_preview_mode == "🎹 Mini World":
-                            continue  # Bỏ qua việc đổi nhạc cụ theo file gốc nếu đang ở mode Mini World
+                            continue 
                         b = om.bytes()
                         self.midi_out.write_short(b[0], b[1] if len(b) > 1 else 0, b[2] if len(b) > 2 else 0)
                     except: pass
@@ -741,50 +752,46 @@ class MiniWorldConverterApp(ctk.CTk):
         while self.is_playing:
             c_ms = self.start_offset + (time.perf_counter() - self.start_perf) * 1000.0 * self.playback_speed
             
-            # 1. Phần UI: Chỉ cập nhật làm sáng cụm nốt trên màn hình
             while self.next_mw_idx < len(bp) and bp[self.next_mw_idx]['sync_time'] <= c_ms:
                 self.current_step_index = self.next_mw_idx; self.next_mw_idx += 1
                 
-            # 2. Phần Âm Thanh: Phát trực tiếp từ dữ liệu MIDI gốc cho CẢ 2 CHẾ ĐỘ
             while self.next_midi_event_idx < len(self.full_midi_events) and self.full_midi_events[self.next_midi_event_idx]['time'] <= c_ms:
                 if self.has_midi_output:
                     e = self.full_midi_events[self.next_midi_event_idx]
                     om = e['msg']
-                    map_key = f"9_{om.note}" if om.channel == 9 and om.type.startswith('note') else f"{om.channel}_ALL"
-                    
-                    if map_key in self.channel_map:
-                        minfo = self.channel_map[map_key]
-                        # Chỉ phát nhạc nếu track đang được tick chọn trên màn hình
-                        if minfo["display_name"] in self.selected_instruments:
-                            try:
-                                is_mw_mode = (self.current_preview_mode == "🎹 Mini World")
-                                
-                                if om.type in ('note_on', 'note_off'):
+                    is_mw_mode = (self.current_preview_mode == "🎹 Mini World")
+
+                    if om.type in ('note_on', 'note_off'):
+                        map_key = f"9_{om.note}" if om.channel == 9 else f"{om.channel}_ALL"
+                        if map_key in self.channel_map:
+                            minfo = self.channel_map[map_key]
+                            if minfo["display_name"] in self.selected_instruments:
+                                try:
                                     vel = om.velocity if om.type == 'note_on' else 0
-                                    
-                                    if om.channel == 9: # Track Trống
-                                        # MW: Lấy tiếng trống game | MIDI: Lấy trống gốc
+                                    if om.channel == 9:
                                         play_note = self.mw_drum_to_gm_note.get(minfo['name'], 60) if is_mw_mode else om.note
                                         self.midi_out.write_short(om.bytes()[0], play_note, vel)
-                                        
-                                    else: # Track Nhạc Cụ Khác
+                                    else:
                                         if is_mw_mode:
                                             mw_prog = self.mw_instrument_to_gm.get(minfo['name'], 0)
                                             if self.mw_channel_programs.get(om.channel) != mw_prog:
                                                 self.midi_out.set_instrument(mw_prog, om.channel)
                                                 self.mw_channel_programs[om.channel] = mw_prog
-                                                
                                         nt = om.note + self.transpose_semitones
                                         if 0 <= nt <= 127:
                                             self.midi_out.write_short(om.bytes()[0], nt, vel)
-                                            
-                                elif om.type in ['program_change', 'control_change', 'pitchwheel']:
-                                    if is_mw_mode and om.type == 'program_change':
-                                        pass # Bỏ qua đổi program gốc nếu đang là Mini World
-                                    else:
-                                        b = om.bytes()
-                                        self.midi_out.write_short(b[0], b[1] if len(b)>1 else 0, b[2] if len(b)>2 else 0)
-                            except: pass
+                                except: pass
+                    
+                    # Các thông số Control Change, Pitchwheel không bị giới hạn bởi channel_map
+                    elif om.type in ['program_change', 'control_change', 'pitchwheel']:
+                        try:
+                            if is_mw_mode and om.type == 'program_change':
+                                pass
+                            else:
+                                b = om.bytes()
+                                self.midi_out.write_short(b[0], b[1] if len(b)>1 else 0, b[2] if len(b)>2 else 0)
+                        except: pass
+                        
                 self.next_midi_event_idx += 1
                 
             if self.next_mw_idx >= len(bp) and self.next_midi_event_idx >= len(self.full_midi_events):
