@@ -358,6 +358,9 @@ class DrumKitManager(ctk.CTkToplevel):
         for note_val, combo in self.drum_map_combos.items():
             val = combo.get()
             name = val.split(":")[1].split("(")[0].strip()
+            full_name_part = val.split(":")[1].strip()
+            last_paren_index = full_name_part.rfind('(')
+            name = full_name_part[:last_paren_index].strip()
             new_map[note_val] = name
         
         self.app.active_drum_map = new_map
@@ -830,6 +833,13 @@ class MiniWorldConverterApp(ctk.CTk):
             
             map_key = f"9_{item['drum_note']}" if item['is_drum'] else f"{item['channel']}_ALL"
             
+            # Phân tích chuỗi để lấy tên và số lần gõ, xử lý được các tên có dấu ngoặc đơn
+            full_name_part = val.split(":")[1].strip()
+            last_paren_index = full_name_part.rfind('(')
+            name = full_name_part[:last_paren_index].strip()
+            tap_part = full_name_part[last_paren_index:]
+            tap = int(tap_part.split("Gõ")[1].replace(")", "").strip())
+
             if item['is_drum']:
                 name = val.split(":")[1].split("(")[0].strip()
                 tap = int(val.split("Gõ")[1].replace(")", "").strip())
@@ -1624,12 +1634,10 @@ class MiniWorldConverterApp(ctk.CTk):
     def change_preview_mode(self, mode):
         # This method is called by the segmented button
         self.current_preview_mode = mode
-        if self.has_midi_output:
-            # Reset toàn bộ nốt và controller để chuẩn bị cho chế độ mới
-            for chan in range(16):
-                self.midi_out.write_short(0b10110000 | chan, 123, 0) # All notes off
-                self.midi_out.write_short(0b10110000 | chan, 121, 0) # Reset all controllers
-            self.mw_channel_programs.clear()
+        # Xóa cache chương trình của chế độ Mini World để buộc đặt lại nhạc cụ
+        self.mw_channel_programs.clear()
+        # Đồng bộ lại sẽ reset tất cả controller và đặt lại đúng chương trình nhạc cụ
+        self._resync_midi_output()
 
     def change_speed(self, choice, force_load=False):
         new_speed = float(choice.replace("x", ""))
