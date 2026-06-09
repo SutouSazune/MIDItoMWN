@@ -90,25 +90,7 @@ GM_DRUM_MAP = {
     63: "Open Hi Conga", 64: "Low Conga", 65: "High Timbale", 66: "Low Timbale"
 }
 
-HELP_TEXT = """# Hướng Dẫn Sử Dụng Công Cụ
-
-## 1. Dây Nối (Wire)
-Dây nối xác định khoảng thời gian chờ giữa hai cụm nốt nhạc.
-
-- **Sát nhau:** Các nốt ở cụm tiếp theo được gõ gần như ngay lập tức.
-- **1 PL (Pulse):** Khoảng trễ rất ngắn, tương đương 1 lần gõ của khối hẹn giờ.
-- **Mức 5 -> Mức 1:** Các khoảng trễ tăng dần. Mức 5 là nhanh nhất, Mức 1 là chậm nhất trong thang này.
-- **Mức 0:** Một khoảng trễ dài. Các khoảng trễ rất dài sẽ được biểu diễn bằng bội số của Mức 0 (ví dụ: "2 Mức 0 + 1 Mức 3").
-
-## 2. Chế Độ Nghe Thử
-- **🎵 Nhạc MIDI Gốc:** Phát lại bản nhạc gốc với các nhạc cụ được map. Yêu cầu có bộ tổng hợp MIDI của hệ điều hành (thường có sẵn trên Windows).
-- **🎹 Mini World:** Mô phỏng âm thanh của các khối nhạc trong game.
-
-## 3. Các Tính Năng Khác
-- **Lưu/Tải Cấu Hình:** Lưu lại cách bạn map nhạc cụ để tái sử dụng sau này.
-- **Tăng/Giảm Pitch:** Thay đổi cao độ của toàn bộ bản nhạc (không áp dụng cho trống).
-- **Xuất Sơ Đồ:** Lưu sơ đồ dọc chi tiết ra file .txt.
-- **Đơn giản hóa:** Loại bỏ các nốt nhạc quá nhanh hoặc quá nhẹ để bản thiết kế dễ xây dựng hơn.
+HELP_TEXT = """wiki and readme.md are free
 """
 
 ctk.set_appearance_mode("Dark")
