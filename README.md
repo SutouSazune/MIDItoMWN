@@ -12,12 +12,14 @@ Một công cụ được thiết kế để giúp người chơi Mini World: Bl
 -   **Hiển Thị Sơ Đồ Đa Dạng:**
     -   **Sơ đồ Dọc:** Dạng văn bản chi tiết, hiển thị rõ từng nốt nhạc cần đặt cho mỗi nhạc cụ trong một cụm.
     -   **Sơ đồ Ngang:** Dạng timeline đồ họa, cho phép cuộn và xem toàn bộ bản nhạc một cách trực quan.
+    -   **Minimap:** Bản đồ thu nhỏ giúp điều hướng nhanh trên Sơ đồ Ngang.
     -   **Sơ đồ Đơn:** Hiển thị chi tiết thông tin của một cụm nốt nhạc được chọn.
 -   **Nghe Thử & Điều Khiển Trực Quan:**
     -   **Chế độ nghe thử kép:**
         -   `🎵 Nhạc MIDI Gốc`: Phát lại bản nhạc gốc bằng bộ tổng hợp MIDI của hệ điều hành.
         -   `🎹 Mini World`: Mô phỏng âm thanh khi chơi bằng các khối nhạc trong game.
     -   **Bộ điều khiển phát nhạc đầy đủ:** Play/Pause, tua đến đầu, chuyển tới/lui từng cụm, thanh trượt thời gian.
+    -   **Tùy chỉnh chủ đề:** Thay đổi màu sắc giao diện.
     -   Điều chỉnh **tốc độ phát** (0.5x đến 1.5x).
     -   Điều chỉnh **cao độ** (tăng/giảm tông) của toàn bộ bản nhạc.
 -   **Lọc và Tùy Chỉnh:**
@@ -30,6 +32,7 @@ Một công cụ được thiết kế để giúp người chơi Mini World: Bl
 3.  Màn hình **"CẤU HÌNH NHẠC CỤ"** sẽ hiện ra. Tại đây:
     -   Kiểm tra và tùy chỉnh các nhạc cụ Mini World tương ứng với mỗi kênh MIDI.
     -   Bạn có thể chọn "Bỏ qua (Mute)" để không chuyển đổi một kênh nào đó.
+    -   Sử dụng ô tìm kiếm để lọc nhanh danh sách nhạc cụ.
     -   Nhấn **"⚡ Bắt Đầu Chuyển Đổi"** sau khi hoàn tất.
 4.  Tại màn hình kết quả:
     -   Sử dụng các tab **"Sơ đồ Dọc"**, **"Sơ đồ Ngang"**, **"Sơ đồ Đơn"** để xem bản thiết kế.

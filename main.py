@@ -90,8 +90,29 @@ GM_DRUM_MAP = {
     63: "Open Hi Conga", 64: "Low Conga", 65: "High Timbale", 66: "Low Timbale"
 }
 
-HELP_TEXT = """wiki and readme.md are free
-"""
+HELP_TEXT = """# Hướng Dẫn Sử Dụng Công Cụ
+
+## 1. Dây Nối (Wire)
+Dây nối xác định khoảng thời gian chờ giữa hai cụm nốt nhạc.
+
+- **Sát nhau:** Các nốt ở cụm tiếp theo được gõ gần như ngay lập tức.
+- **1 PL (Pulse):** Khoảng trễ rất ngắn, tương đương 1 lần gõ của khối hẹn giờ.
+- **Mức 5 -> Mức 1:** Các khoảng trễ tăng dần. Mức 5 là nhanh nhất, Mức 1 là chậm nhất trong thang này.
+- **Mức 0:** Một khoảng trễ dài. Các khoảng trễ rất dài sẽ được biểu diễn bằng bội số của Mức 0 (ví dụ: "2 Mức 0 + 1 Mức 3").
+
+## 2. Chế Độ Nghe Thử
+- **🎵 Nhạc MIDI Gốc:** Phát lại bản nhạc gốc với các nhạc cụ được map. Yêu cầu có bộ tổng hợp MIDI của hệ điều hành (thường có sẵn trên Windows).
+- **🎹 Mini World:** Mô phỏng âm thanh của các khối nhạc trong game.
+
+## 3. Các Tính Năng Khác
+- **Lưu/Tải Cấu Hình:** Lưu lại cách bạn map nhạc cụ để tái sử dụng sau này.
+- **Tăng/Giảm Pitch:** Thay đổi cao độ của toàn bộ bản nhạc (không áp dụng cho trống).
+- **Xuất Sơ Đồ:** Lưu sơ đồ dọc chi tiết ra file .txt.
+- **Quản lý bộ trống:** Tùy chỉnh cách map các nốt trống MIDI sang trống Mini World.
+- **Đơn giản hóa:** Loại bỏ các nốt nhạc quá nhanh hoặc quá nhẹ để bản thiết kế dễ xây dựng hơn.
+
+---
+Công cụ được phát triển bởi LKL."""
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -174,7 +195,7 @@ class MidiProcessor:
 
 class BlueprintGenerator:
     """Tạo sơ đồ chi tiết (blueprint) từ danh sách nốt nhạc đã xử lý."""
-    def create_blueprint(self, original_notes, channel_map, selected_instruments, transpose_semitones):
+    def create_blueprint(self, original_notes, channel_map, selected_instruments, transpose_semitones, mw_drum_to_gm_note):
         target_notes = [n for n in original_notes if channel_map[n['map_key']]["display_name"] in selected_instruments]
         blueprint = []
         
@@ -198,22 +219,24 @@ class BlueprintGenerator:
                 inst_name = map_info["display_name"]
                 
                 if inst_name not in inst_data:
-                    inst_data[inst_name] = {"notes_raw": [], "notes": [], "type": map_info["type"]}
-                    
-                if map_info["type"] == "Synth":
-                    original_transposed_note = n['note'] + transpose_semitones
-                    mw_note_val = original_transposed_note
+                    inst_data[inst_name] = {"notes_raw": [], "notes": [], "type": map_info["type"], "name": map_info["name"]}
+                
+                if map_info["type"] == "Drum":
+                    inst_data[inst_name]["notes_raw"].append(f"[Trống] Gõ {map_info['tap']}")
+                    # For drum preview, we use a fixed note from the MW_DRUM mapping
+                    gm_note_for_preview = mw_drum_to_gm_note.get(map_info['name'], 60) # Default to Hi Bongo
+                    inst_data[inst_name]["notes"].append({'midi': gm_note_for_preview, 'channel': 9})
+                else: # Synth
+                    final_note = n['note'] + transpose_semitones
+                    mw_note_val = final_note
                     while mw_note_val < 48: mw_note_val += 12
                     while mw_note_val > 83: mw_note_val -= 12
                     
                     tap = mw_note_val % 12
                     b = "Trầm" if mw_note_val <= 59 else "Trung" if mw_note_val <= 71 else "Cao"
                     inst_data[inst_name]["notes_raw"].append(f"Khối {b}: {tap}")
-                    inst_data[inst_name]["notes"].append({'midi': original_transposed_note, 'channel': n['channel']})
-                else:
-                    inst_data[inst_name]["notes_raw"].append(f"[Trống] Gõ {map_info['tap']}")
-                    inst_data[inst_name]["notes"].append({'midi': n['note'], 'channel': 9})
-            
+                    inst_data[inst_name]["notes"].append({'midi': final_note, 'channel': n['channel']})
+
             for name in inst_data:
                 inst_data[name]["notes_raw"] = list(dict.fromkeys(inst_data[name]["notes_raw"]))
                 inst_data[name]["notes"] = list({(d['midi'], d['channel']): d for d in inst_data[name]["notes"]}.values())
@@ -244,6 +267,102 @@ class BlueprintGenerator:
                 "instruments": inst_data, "wire": wire_str
             })
         return blueprint
+
+class SettingsWindow(ctk.CTkToplevel):
+    def __init__(self, master):
+        super().__init__(master)
+        self.transient(master)
+        self.title("Cài Đặt")
+        self.geometry("400x300")
+        self.app = master
+
+        ctk.CTkLabel(self, text="Chủ đề màu sắc:", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 5))
+        theme_combo = ctk.CTkComboBox(self, values=["Mặc định (Cyan)", "Vàng Gold", "Hồng Ruby"], command=self.app._apply_theme)
+        theme_combo.set(self.app.current_theme_name)
+        theme_combo.pack(pady=5)
+
+        ctk.CTkLabel(self, text="Nâng cao:", font=ctk.CTkFont(weight="bold")).pack(pady=(30, 5))
+        ctk.CTkButton(self, text="Trình Quản Lý Bộ Trống", command=self.open_drum_kit_manager).pack(pady=10)
+
+    def open_drum_kit_manager(self):
+        if not hasattr(self, 'drum_kit_window') or not self.drum_kit_window.winfo_exists():
+            self.drum_kit_window = DrumKitManager(self.app)
+        self.drum_kit_window.focus()
+
+class DrumKitManager(ctk.CTkToplevel):
+    def __init__(self, master):
+        super().__init__(master)
+        self.transient(master)
+        self.app = master
+        self.title("Trình Quản Lý Bộ Trống")
+        self.geometry("700x600")
+
+        self.drum_map_combos = {}
+
+        top_frame = ctk.CTkFrame(self, fg_color="transparent")
+        top_frame.pack(fill="x", padx=10, pady=10)
+        ctk.CTkButton(top_frame, text="Tải Bộ Trống", command=self.load_kit).pack(side="left", padx=5)
+        ctk.CTkButton(top_frame, text="Lưu Bộ Trống", command=self.save_kit).pack(side="left", padx=5)
+        ctk.CTkButton(top_frame, text="Áp Dụng cho Lần Chuyển Đổi Này", command=self.apply_kit, fg_color=COLOR_SUCCESS).pack(side="right", padx=5)
+
+        scroll_frame = ctk.CTkScrollableFrame(self)
+        scroll_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        options_drum = [f"🥁 Trống: {k} (Gõ {v})" for k, v in MW_DRUMS.items()]
+
+        for note_val, note_name in sorted(GM_DRUM_MAP.items()):
+            row = ctk.CTkFrame(scroll_frame)
+            row.pack(fill="x", pady=2, padx=5)
+            ctk.CTkLabel(row, text=f"Nốt {note_val}: {note_name}", width=250, anchor="w").pack(side="left", padx=10)
+            
+            combo = ctk.CTkComboBox(row, values=options_drum, width=250)
+            
+            # Set default value from current mapping
+            current_mw_drum = self.app.active_drum_map.get(note_val)
+            if current_mw_drum:
+                for option in options_drum:
+                    if current_mw_drum in option:
+                        combo.set(option)
+                        break
+            
+            combo.pack(side="right", padx=10, pady=5)
+            self.drum_map_combos[note_val] = combo
+
+    def save_kit(self):
+        kit_data = {note: combo.get() for note, combo in self.drum_map_combos.items()}
+        file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("Drum Kit JSON", "*.json")], title="Lưu Bộ Trống")
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(kit_data, f, indent=4)
+                messagebox.showinfo("Thành công", "Đã lưu bộ trống.", parent=self)
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không thể lưu file: {e}", parent=self)
+
+    def load_kit(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Drum Kit JSON", "*.json")], title="Tải Bộ Trống")
+        if file_path:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    kit_data = json.load(f)
+                for note_val_str, mw_drum_str in kit_data.items():
+                    note_val = int(note_val_str)
+                    if note_val in self.drum_map_combos:
+                        self.drum_map_combos[note_val].set(mw_drum_str)
+                messagebox.showinfo("Thành công", "Đã tải bộ trống.", parent=self)
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không thể tải file: {e}", parent=self)
+
+    def apply_kit(self):
+        new_map = {}
+        for note_val, combo in self.drum_map_combos.items():
+            val = combo.get()
+            name = val.split(":")[1].split("(")[0].strip()
+            new_map[note_val] = name
+        
+        self.app.active_drum_map = new_map
+        messagebox.showinfo("Hoàn tất", "Đã áp dụng bộ trống tùy chỉnh cho lần chuyển đổi này.", parent=self)
+        self.destroy()
 
 # =========================================================
 # MAIN APPLICATION
@@ -334,6 +453,16 @@ class MiniWorldConverterApp(ctk.CTk):
         self.card_width = 320  
         
         self.setup_input_screen()
+        
+        # --- Cài đặt màu sắc và theme ---
+        self.current_theme_name = "Mặc định (Cyan)"
+        self._apply_theme(self.current_theme_name, first_load=True)
+
+        # --- Cài đặt bộ trống ---
+        self.default_drum_map = {note: name for note, name in MW_DRUMS.items()} # Simplified
+        self.active_drum_map = self._create_default_drum_map()
+
+        # --- Setup UI ---
         self.setup_mapping_screen()
         self.setup_output_screen()
         
@@ -400,6 +529,12 @@ class MiniWorldConverterApp(ctk.CTk):
         self.lbl_map_title = ctk.CTkLabel(self.frame_mapping, text="CẤU HÌNH NHẠC CỤ", font=ctk.CTkFont(size=28, weight="bold"))
         self.lbl_map_title.pack(pady=(30, 20))
         self.map_scroll = ctk.CTkScrollableFrame(self.frame_mapping, width=600, height=400)
+
+        search_frame = ctk.CTkFrame(self.frame_mapping, fg_color="transparent")
+        search_frame.pack(fill="x", padx=10, pady=(0, 5))
+        self.map_search_entry = ctk.CTkEntry(search_frame, placeholder_text="🔍 Tìm kiếm nhạc cụ...")
+        self.map_search_entry.pack(fill="x", padx=10, pady=5)
+        self.map_search_entry.bind("<KeyRelease>", self._filter_mapping_list)
         self.map_scroll.pack(pady=10, padx=10, fill="y", expand=True)
 
         map_actions_frame = ctk.CTkFrame(self.frame_mapping, fg_color="transparent")
@@ -437,9 +572,11 @@ class MiniWorldConverterApp(ctk.CTk):
         self.top_bar.pack(fill="x", padx=10, pady=5)
         self.btn_back = ctk.CTkButton(self.top_bar, text="← Tệp", width=100, corner_radius=8, fg_color=COLOR_BG_MAIN, hover_color="#3a3a3a", cursor="hand2", command=self.back_to_input)
         self.btn_back.pack(side="left")
-        self.btn_export = ctk.CTkButton(self.top_bar, text="Xuất Sơ Đồ Dọc (.txt)", width=180, command=self.export_vertical_to_txt)
-        self.btn_export.pack(side="left", padx=(10, 0))
+        self.btn_export_txt = ctk.CTkButton(self.top_bar, text="Xuất Sơ đồ Dọc (.txt)", width=200, command=self.export_vertical_to_txt)
+        self.btn_export_txt.pack(side="left", padx=(10, 0))
         self.lbl_now_playing = ctk.CTkLabel(self.top_bar, text="", font=ctk.CTkFont(weight="bold", size=20))
+        self.btn_settings = ctk.CTkButton(self.top_bar, text="⚙️", width=30, command=self.open_settings)
+        self.btn_settings.pack(side="right", padx=(0, 5))
         self.lbl_now_playing.pack(side="left", fill="x", expand=True)
         self.btn_help = ctk.CTkButton(self.top_bar, text="?", width=30, command=self.show_help)
         self.btn_help.pack(side="right", padx=(0, 10))
@@ -455,12 +592,12 @@ class MiniWorldConverterApp(ctk.CTk):
         self.sheet_checkboxes_frame = ctk.CTkScrollableFrame(self.sheet_panel, orientation="horizontal", height=45, fg_color="transparent")
         self.sheet_checkboxes_frame.pack(side="left", fill="x", expand=True, padx=10)
 
-        self.tabview = ctk.CTkTabview(self.frame_output)
+        self.tabview = ctk.CTkTabview(self.frame_output, command=self.on_tab_change)
         self.tabview.pack(fill="both", expand=True, padx=10, pady=5)
         self.tab_vert = self.tabview.add("Sơ đồ Dọc")
         self.tab_horz = self.tabview.add("Sơ đồ Ngang")
         self.tab_step = self.tabview.add("Sơ đồ Đơn")
-        self.tab_stats = self.tabview.add("Thống kê")
+        self.tab_stats = self.tabview.add("📊 Thống kê")
         
         self.txt_vert = ctk.CTkTextbox(self.tab_vert, font=ctk.CTkFont(family="Consolas", size=16), wrap="none", cursor="hand2")
         self.txt_vert.pack(fill="both", expand=True, padx=5, pady=5)
@@ -471,10 +608,14 @@ class MiniWorldConverterApp(ctk.CTk):
         self.canvas_frame = ctk.CTkFrame(self.tab_horz)
         self.canvas_frame.pack(fill="both", expand=True)
         self.canvas = ctk.CTkCanvas(self.canvas_frame, bg="#121212", highlightthickness=0)
-        self.scrollbar_x = ctk.CTkScrollbar(self.canvas_frame, orientation="horizontal", command=self.canvas.xview)
-        self.canvas.configure(xscrollcommand=self.scrollbar_x.set)
+        self.minimap_canvas = ctk.CTkCanvas(self.canvas_frame, height=50, bg="#0c0c0c", highlightthickness=0)
+        self.minimap_viewport = self.minimap_canvas.create_rectangle(0,0,0,0, outline="red") # Placeholder
+        self.scrollbar_x = ctk.CTkScrollbar(self.canvas_frame, orientation="horizontal")
+        
         self.canvas.pack(side="top", fill="both", expand=True)
+        self.minimap_canvas.pack(side="bottom", fill="x")
         self.scrollbar_x.pack(side="bottom", fill="x")
+
         self.canvas.bind("<MouseWheel>", lambda e: self.canvas.xview_scroll(int(-1 * (e.delta / 120)), "units"))
         
         self.frame_step = ctk.CTkFrame(self.tab_step, corner_radius=10)
@@ -534,6 +675,21 @@ class MiniWorldConverterApp(ctk.CTk):
             self.lbl_file.configure(text=os.path.basename(path))
             self.scan_midi_channels()
 
+    def _filter_mapping_list(self, event=None):
+        search_term = self.map_search_entry.get().lower()
+        for item in self.mapping_comboboxes:
+            row_frame = item['frame']
+            label_widget = row_frame.winfo_children()[0]
+            label_text = label_widget.cget("text").lower()
+            
+            if search_term in label_text:
+                if not row_frame.winfo_ismapped():
+                    row_frame.pack(fill="x", pady=item['pady'], padx=item['padx'])
+            else:
+                if row_frame.winfo_ismapped():
+                    row_frame.pack_forget()
+
+
     def scan_midi_channels(self):
         try:
             used_channels, used_drum_notes, channel_programs = self.processor.scan_channels(self.file_path)
@@ -548,7 +704,7 @@ class MiniWorldConverterApp(ctk.CTk):
             
             for ch in used_channels:
                 frame_row = ctk.CTkFrame(self.map_scroll)
-                frame_row.pack(fill="x", pady=5, padx=10)
+                frame_row.pack(fill="x", pady=5, padx=10) # Default pack options
                 
                 prog = channel_programs[ch]
                 display_name = f"🎹 {GM_INSTRUMENTS[prog]}" if 0 <= prog < len(GM_INSTRUMENTS) else f"🎹 Nhạc cụ (Prog {prog})"
@@ -583,7 +739,7 @@ class MiniWorldConverterApp(ctk.CTk):
                 else:
                     combo.set("🎹 Tổng hợp: Piano (Gõ 0)")
                 combo.pack(side="right", padx=10, pady=10)
-                self.mapping_comboboxes.append({'channel': ch, 'is_drum': False, 'drum_note': None, 'combo': combo})
+                self.mapping_comboboxes.append({'channel': ch, 'is_drum': False, 'drum_note': None, 'combo': combo, 'frame': frame_row, 'pady': 5, 'padx': 10})
 
             if used_drum_notes:
                 lbl_drum_title = ctk.CTkLabel(self.map_scroll, text="--- CHI TIẾT BỘ TRỐNG (Kênh 10) ---", text_color=COLOR_ACCENT_2, font=ctk.CTkFont(weight="bold"))
@@ -591,19 +747,20 @@ class MiniWorldConverterApp(ctk.CTk):
                 for note in used_drum_notes:
                     frame_row = ctk.CTkFrame(self.map_scroll)
                     frame_row.pack(fill="x", pady=2, padx=10)
+                    
                     drum_name = GM_DRUM_MAP.get(note, f"Unknown Drum ({note})")
                     lbl_name = ctk.CTkLabel(frame_row, text=f"🥁 Nốt {note}: {drum_name}", width=250, anchor="w", font=ctk.CTkFont(weight="bold"))
                     lbl_name.pack(side="left", padx=10, pady=10)
                     combo = ctk.CTkComboBox(frame_row, values=options_drum, width=300)
-                    if note in [35, 36]: combo.set("🥁 Trống: Bass (Gõ 0)")
-                    elif note in [38, 40]: combo.set("🥁 Trống: Lẫy (Gõ 3)")
-                    elif note in [42, 44, 46]: combo.set("🥁 Trống: Hi-hat (đóng) (Gõ 4)")
-                    elif note in [41, 43, 45, 47, 48, 50]: combo.set("🥁 Trống: Tom-tom (Gõ 2)")
-                    elif note in [49, 52, 55, 57]: combo.set("🥁 Trống: Chũm choẹ to (Gõ 6)")
-                    elif note in [51, 53, 59]: combo.set("🥁 Trống: Chũm choẹ trung (Gõ 5)")
-                    else: combo.set("🥁 Trống: Jam-block (Gõ 7)")
+                    
+                    mw_drum_name = self.active_drum_map.get(note)
+                    if mw_drum_name:
+                        for option in options_drum:
+                            if mw_drum_name in option:
+                                combo.set(option); break
+
                     combo.pack(side="right", padx=10, pady=10)
-                    self.mapping_comboboxes.append({'channel': 9, 'is_drum': True, 'drum_note': note, 'combo': combo})
+                    self.mapping_comboboxes.append({'channel': 9, 'is_drum': True, 'drum_note': note, 'combo': combo, 'frame': frame_row, 'pady': 2, 'padx': 10})
                 
             self.frame_input.pack_forget()
             self.frame_mapping.pack(fill="both", expand=True, padx=20, pady=20)
@@ -671,24 +828,25 @@ class MiniWorldConverterApp(ctk.CTk):
             val = item['combo'].get()
             if "Bỏ qua" in val: continue
             
-            is_synth = "Tổng hợp" in val or "🎹" in val
-            is_electronic = "Điện tử" in val or "⚡" in val
-            name = val.split(":")[1].split("(")[0].strip()
-            tap = int(val.split("Gõ")[1].replace(")", "").strip())
             map_key = f"9_{item['drum_note']}" if item['is_drum'] else f"{item['channel']}_ALL"
             
-            inst_type = "Drum"
-            emoji = "🥁"
-            if is_synth or is_electronic:
+            if item['is_drum']:
+                name = val.split(":")[1].split("(")[0].strip()
+                tap = int(val.split("Gõ")[1].replace(")", "").strip())
+                display_name = f"🥁 {name} ({tap})"
+                inst_type = "Drum"
+            else: # Synth hoặc Electronic
+                is_synth = "Tổng hợp" in val or "🎹" in val
+                name = val.split(":")[1].split("(")[0].strip()
+                tap = int(val.split("Gõ")[1].replace(")", "").strip())
+                emoji = "🎹" if is_synth else "⚡"
+                display_name = f"{emoji} {name} ({tap})"
                 inst_type = "Synth"
-            
-            if is_synth: emoji = "🎹"
-            elif is_electronic: emoji = "⚡"
 
             self.channel_map[map_key] = {
                 "type": inst_type,
                 "name": name, "tap": tap,
-                "display_name": f"{emoji} {name} ({tap})"
+                "display_name": display_name
             }
         
         simplification_options = {
@@ -718,7 +876,7 @@ class MiniWorldConverterApp(ctk.CTk):
             self.is_playing = False
             
         self.active_blueprint = self.generator.create_blueprint(
-            self.original_notes, self.channel_map, self.selected_instruments, self.transpose_semitones
+            self.original_notes, self.channel_map, self.selected_instruments, self.transpose_semitones, self.mw_drum_to_gm_note
         )
 
         self.render_active_sheet()
@@ -754,6 +912,15 @@ class MiniWorldConverterApp(ctk.CTk):
         self.slider_time.configure(to=max_time + 1000)
         self.update_active_blueprint()
         self.jump_to_start()
+
+        # Configure minimap after everything is drawn
+        self.canvas.configure(xscrollcommand=self._on_canvas_scrolled)
+        self.scrollbar_x.configure(command=self._on_horizontal_scroll)
+
+    def on_tab_change(self):
+        if self.tabview.get() == "Sơ đồ Ngang":
+            self._draw_minimap()
+            self._update_minimap_viewport()
 
     def on_checkbox_change(self, inst_name):
         if self.checkbox_vars[inst_name].get(): self.selected_instruments.add(inst_name)
@@ -876,6 +1043,36 @@ class MiniWorldConverterApp(ctk.CTk):
 
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
+        self._draw_minimap()
+        self._update_minimap_viewport()
+
+    def _draw_minimap(self):
+        self.minimap_canvas.delete("all")
+        bp = self.active_blueprint
+        if not bp: return
+
+        self.minimap_canvas.update_idletasks()
+        canvas_w = self.minimap_canvas.winfo_width()
+        total_w = len(bp) * (self.card_width + 80)
+        if total_w == 0 or canvas_w <= 1: return
+        
+        scale = canvas_w / total_w
+        
+        for i, item in enumerate(bp):
+            x0 = i * (self.card_width + 80) * scale
+            x1 = x0 + self.card_width * scale
+            self.minimap_canvas.create_rectangle(x0, 5, x1, 45, fill="#242424", outline="#555555", tags="minimap_item")
+
+        self.minimap_viewport = self.minimap_canvas.create_rectangle(0, 2, 0, 48, outline=self.COLOR_ACCENT_1, width=2)
+        self.minimap_canvas.bind("<Button-1>", self._on_minimap_click_drag)
+        self.minimap_canvas.bind("<B1-Motion>", self._on_minimap_click_drag)
+
+    def _update_minimap_viewport(self):
+        start_frac, end_frac = self.canvas.xview()
+        minimap_w = self.minimap_canvas.winfo_width()
+        x0, x1 = start_frac * minimap_w, end_frac * minimap_w
+        self.minimap_canvas.coords(self.minimap_viewport, x0, 2, x1, 48)
+
     def update_stats_tab(self):
         """Tính toán và hiển thị các thông số chi tiết của bản nhạc trong tab Thống kê."""
         # Helper to create an expandable list for top stats
@@ -915,7 +1112,7 @@ class MiniWorldConverterApp(ctk.CTk):
         # Helper to create a section
         def _add_section(parent, title):
             frame = ctk.CTkFrame(parent, fg_color=COLOR_BG_SECTION)
-            frame.pack(fill="x", pady=(10, 5), padx=5)
+            frame.pack(fill="x", pady=(10, 5), padx=5) # This color is static, no need to update
             label = ctk.CTkLabel(frame, text=title, font=ctk.CTkFont(size=18, weight="bold"), text_color=COLOR_ACCENT_1)
             label.pack(pady=5, padx=10, anchor="w")
             return frame
@@ -1044,7 +1241,7 @@ class MiniWorldConverterApp(ctk.CTk):
 
         try:
             fig = Figure(figsize=(5, 4), dpi=100)
-            fig.patch.set_facecolor(COLOR_BG_MAIN)
+            fig.patch.set_facecolor(self.COLOR_BG_MAIN)
             ax = fig.add_subplot(111)
 
             explode = [0] * len(sizes)
@@ -1087,12 +1284,12 @@ class MiniWorldConverterApp(ctk.CTk):
 
         try:
             fig = Figure(figsize=(5, max(4, len(labels) * 0.4)), dpi=100)
-            fig.patch.set_facecolor(COLOR_BG_MAIN)
+            fig.patch.set_facecolor(self.COLOR_BG_MAIN)
             ax = fig.add_subplot(111)
-            ax.set_facecolor(COLOR_BG_SECTION)
+            ax.set_facecolor(self.COLOR_BG_SECTION)
 
             y_pos = np.arange(len(labels))
-            bars = ax.barh(y_pos, sizes, align='center', color=COLOR_SYNTH)
+            bars = ax.barh(y_pos, sizes, align='center', color=self.COLOR_SYNTH)
             ax.set_yticks(y_pos, labels=labels)
             ax.invert_yaxis()
             ax.set_xlabel('Số Lượng Nốt', color='white')
@@ -1155,6 +1352,13 @@ class MiniWorldConverterApp(ctk.CTk):
         """Phát âm thanh mô phỏng Mini World bằng bộ synth MIDI của hệ điều hành."""
         if not self.has_midi_output or not inst_dict: return
 
+        DRUM_PREVIEW_CHANNEL = 15 # Sử dụng một kênh riêng cho preview trống
+        DRUM_PREVIEW_PROGRAM = 117 # GM Melodic Tom, một âm thanh gõ có cao độ
+
+        if self.mw_channel_programs.get(DRUM_PREVIEW_CHANNEL) != DRUM_PREVIEW_PROGRAM:
+            self.midi_out.set_instrument(DRUM_PREVIEW_PROGRAM, DRUM_PREVIEW_CHANNEL)
+            self.mw_channel_programs[DRUM_PREVIEW_CHANNEL] = DRUM_PREVIEW_PROGRAM
+
         def turn_off_notes(notes_to_turn_off):
             time.sleep(0.15)  # Thời gian ngân để tạo cảm giác gõ block
             for note, channel in notes_to_turn_off:
@@ -1163,19 +1367,18 @@ class MiniWorldConverterApp(ctk.CTk):
         notes_to_turn_off = []
         for inst_name, data in inst_dict.items():
             inst_type = data.get("type", "Synth")
-            
             for note_info in data['notes']:
                 note = note_info['midi']
                 channel = note_info['channel']
+                base_name = data.get('name')
+                if not base_name: continue
                 
                 if inst_type == "Drum":
-                    base_name = inst_name.split('(')[0].strip().replace('🥁 ', '')
+                    # Use the pre-calculated GM note for preview
                     velocity = 127 if base_name == "Jam-block" else 100
-                    playback_note = self.mw_drum_to_gm_note.get(base_name, note)
-                    self.midi_out.note_on(playback_note, velocity, 9) # Kênh 9 cho trống
-                    notes_to_turn_off.append((playback_note, 9))
+                    self.midi_out.note_on(note, velocity, 9) # Kênh 9 cho trống
+                    notes_to_turn_off.append((note, 9))
                 else:
-                    base_name = inst_name.split('(')[0].strip().replace('🎹 ', '').replace('⚡ ', '')
                     gm_program = self.mw_instrument_to_gm.get(base_name, 0)
                     
                     if self.mw_channel_programs.get(channel) != gm_program:
@@ -1233,6 +1436,7 @@ class MiniWorldConverterApp(ctk.CTk):
             self.play_mixed_instruments(bp[idx]['instruments'])
 
         if was_playing:
+            # If it was playing, resume it
             self.start_offset = self.playback_offset
             self.start_perf = time.perf_counter()
             self.is_playing = True
@@ -1405,10 +1609,20 @@ class MiniWorldConverterApp(ctk.CTk):
             self.canvas.itemconfig(card_info['bg'], fill="#12505a" if i == idx else "#242424", outline="#00e5ff" if i == idx else "#555555", width=4 if i == idx else 2)
             
         if len(self.canvas_rects) > 0:
-            try: self.canvas.xview_moveto(max(0, (idx * (self.card_width + 80)) / (len(self.canvas_rects) * (self.card_width + 80))))
+            total_width = len(self.canvas_rects) * (self.card_width + 80)
+            if total_width == 0: return
+            
+            # Center the active card
+            card_center_x = (idx * (self.card_width + 80)) + (self.card_width / 2)
+            canvas_width = self.canvas.winfo_width()
+            
+            moveto_fraction = (card_center_x - (canvas_width / 2)) / total_width
+            
+            try: self.canvas.xview_moveto(max(0, min(1, moveto_fraction)))
             except: pass
 
     def change_preview_mode(self, mode):
+        # This method is called by the segmented button
         self.current_preview_mode = mode
         if self.has_midi_output:
             # Reset toàn bộ nốt và controller để chuẩn bị cho chế độ mới
@@ -1449,6 +1663,77 @@ class MiniWorldConverterApp(ctk.CTk):
         if hasattr(self, 'lbl_pitch') and self.lbl_pitch:
             self.lbl_pitch.configure(text=f"Pitch: {self.transpose_semitones:+d}")
         self.update_active_blueprint()
+
+    def open_settings(self):
+        if not hasattr(self, 'settings_window') or not self.settings_window.winfo_exists():
+            self.settings_window = SettingsWindow(self)
+        self.settings_window.focus()
+
+    def _create_default_drum_map(self):
+        # Creates the default mapping from GM note to MW drum name
+        mapping = {}
+        for note in range(35, 82): # Standard GM drum notes
+            if note in [35, 36]: mapping[note] = "Bass"
+            elif note in [38, 40]: mapping[note] = "Lẫy"
+            elif note in [42, 44, 46]: mapping[note] = "Hi-hat (đóng)"
+            elif note in [41, 43, 45, 47, 48, 50]: mapping[note] = "Tom-tom"
+            elif note in [49, 52, 55, 57]: mapping[note] = "Chũm choẹ to"
+            elif note in [51, 53, 59]: mapping[note] = "Chũm choẹ trung"
+            else: mapping[note] = "Jam-block"
+        return mapping
+
+    def _apply_theme(self, theme_name, first_load=False):
+        self.current_theme_name = theme_name
+        if theme_name == "Vàng Gold":
+            self.COLOR_ACCENT_1 = "#ffc107"
+            self.COLOR_SYNTH = "#ffb300"
+            self.COLOR_DRUM = "#f06292"
+            self.COLOR_INFO = "#ffb300"
+            self.COLOR_INFO_HOVER = "#e6a100"
+        elif theme_name == "Hồng Ruby":
+            self.COLOR_ACCENT_1 = "#e91e63"
+            self.COLOR_SYNTH = "#ec407a"
+            self.COLOR_DRUM = "#ab47bc"
+            self.COLOR_INFO = "#ec407a"
+            self.COLOR_INFO_HOVER = "#d43a6f"
+        else: # Default
+            self.COLOR_ACCENT_1 = "#00e5ff"
+            self.COLOR_SYNTH = "#17a2b8"
+            self.COLOR_DRUM = "#e83e8c"
+            self.COLOR_INFO = "#17a2b8"
+            self.COLOR_INFO_HOVER = "#138496"
+        
+        if not first_load:
+            self._reconfigure_colors()
+    
+    def _reconfigure_colors(self):
+        # Re-configure all relevant widgets
+        self.lbl_step_num.configure(text_color=self.COLOR_ACCENT_1)
+        self.btn_select_all.configure(fg_color=self.COLOR_INFO, hover_color=self.COLOR_INFO_HOVER)
+        self.btn_increase.configure(fg_color=self.COLOR_INFO)
+        
+        # Redraw elements that depend on colors
+        if self.active_blueprint:
+            self.update_stats_tab()
+            self.render_active_sheet()
+            self.apply_sync_visuals()
+
+    def _on_canvas_scrolled(self, *args):
+        """Called when the main canvas is scrolled."""
+        self.scrollbar_x.set(*args)
+        self._update_minimap_viewport()
+
+    def _on_horizontal_scroll(self, *args):
+        """Called when the scrollbar is moved."""
+        self.canvas.xview(*args)
+        self._update_minimap_viewport()
+
+    def _on_minimap_click_drag(self, event):
+        """Called when the minimap is clicked or dragged."""
+        self.minimap_canvas.update_idletasks()
+        frac = event.x / self.minimap_canvas.winfo_width()
+        self.canvas.xview_moveto(frac)
+        self._update_minimap_viewport()
 
     def show_help(self):
         if hasattr(self, 'help_window') and self.help_window.winfo_exists():
