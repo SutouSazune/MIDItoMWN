@@ -658,10 +658,19 @@ class MiniWorldConverterApp(ctk.CTk):
                 n = n_info.get('og_midi', n_info['midi'])
                 ch = n_info['channel']
                 prog = n_info.get('program', 0)
-                vel = n_info.get('velocity', 100)  # Lấy lực đánh gốc
-                bn = d.get('name')
+                vel = n_info.get('velocity', 100)
                 
+                # Bơm lực gõ khi click chuột
+                if is_mw_mode: vel = min(127, int(vel * 1.3))
+                
+                bn = d.get('name')
                 if not bn: continue
+                
+                # Bơm MAX Độ vang (Reverb CC91) và Âm lượng (CC7) cho kênh trước khi gõ nốt
+                if is_mw_mode:
+                    self.midi_out.write_short(0b10110000 | ch, 91, 127)
+                    self.midi_out.write_short(0b10110000 | ch, 7, 127)
+
                 if d.get("type", "Synth") == "Drum" or ch == 9:
                     self.midi_out.note_on(n, vel, 9)
                     n_off.append((n, 9))
@@ -768,6 +777,11 @@ class MiniWorldConverterApp(ctk.CTk):
                             if minfo["display_name"] in self.selected_instruments:
                                 try:
                                     vel = om.velocity if om.type == 'note_on' else 0
+                                    
+                                    # HACK CỘNG HƯỞNG: Bơm thêm 30% lực gõ cho Mini World
+                                    if is_mw_mode and vel > 0:
+                                        vel = min(127, int(vel * 1.3)) 
+                                        
                                     if om.channel == 9:
                                         play_note = self.mw_drum_to_gm_note.get(minfo['name'], 60) if is_mw_mode else om.note
                                         self.midi_out.write_short(om.bytes()[0], play_note, vel)
@@ -777,16 +791,28 @@ class MiniWorldConverterApp(ctk.CTk):
                                             if self.mw_channel_programs.get(om.channel) != mw_prog:
                                                 self.midi_out.set_instrument(mw_prog, om.channel)
                                                 self.mw_channel_programs[om.channel] = mw_prog
+                                                # Kích max Reverb (Độ vang) khi đổi nhạc cụ MW
+                                                self.midi_out.write_short(0b10110000 | om.channel, 91, 127)
+                                                
                                         nt = om.note + self.transpose_semitones
                                         if 0 <= nt <= 127:
                                             self.midi_out.write_short(om.bytes()[0], nt, vel)
                                 except: pass
                     
-                    # Các thông số Control Change, Pitchwheel không bị giới hạn bởi channel_map
                     elif om.type in ['program_change', 'control_change', 'pitchwheel']:
                         try:
-                            if is_mw_mode and om.type == 'program_change':
-                                pass
+                            if is_mw_mode:
+                                if om.type == 'program_change':
+                                    pass # Chặn đổi nhạc cụ gốc
+                                elif om.type == 'control_change':
+                                    b = om.bytes()
+                                    # Nếu file gốc gửi lệnh Volume (7) hoặc Reverb (91), ta ép nó to lên
+                                    if b[1] == 7:   b = (b[0], b[1], min(127, int(b[2] * 1.3)))
+                                    elif b[1] == 91: b = (b[0], b[1], max(100, b[2])) # Không cho reverb tụt dưới 100
+                                    self.midi_out.write_short(b[0], b[1], b[2])
+                                else:
+                                    b = om.bytes()
+                                    self.midi_out.write_short(b[0], b[1], b[2] if len(b)>2 else 0)
                             else:
                                 b = om.bytes()
                                 self.midi_out.write_short(b[0], b[1] if len(b)>1 else 0, b[2] if len(b)>2 else 0)
@@ -839,16 +865,63 @@ class MiniWorldConverterApp(ctk.CTk):
         tot_c, tot_i, tm = len(bp), len(self.selected_instruments), bp[-1]['sync_time'] if bp else 0
         min, sec = divmod(tm / 1000, 60); b_ts = f"{int(min):02d}:{sec:05.2f}"
         t_n, i_n_c, w_c = 0, {n: 0 for n in self.selected_instruments}, {"Mức 0":0,"Mức 1":0,"Mức 2":0,"Mức 3":0,"Mức 4":0,"Mức 5":0,"PL":0,"Sát nhau":0}
+        
+        # --- THU THẬP THÊM DỮ LIỆU CỤM ---
+        cluster_stats = []
+        max_inst_count, max_inst_cluster_id = 0, ""
+
         for m in bp:
-            for n, d in m['instruments'].items(): t_n += len(d['notes']); i_n_c[n] = i_n_c.get(n, 0) + len(d['notes'])
+            c_notes = 0
+            for n, d in m['instruments'].items(): 
+                t_n += len(d['notes'])
+                i_n_c[n] = i_n_c.get(n, 0) + len(d['notes'])
+                c_notes += len(d['notes'])
+            
+            # Tính nhạc cụ nhiều nhất
+            inst_count = len(m['instruments'])
+            if inst_count > max_inst_count:
+                max_inst_count = inst_count
+                max_inst_cluster_id = m['id']
+                
+            cluster_stats.append({'id': m['id'], 'note_count': c_notes})
+            
             if m['wire'] != '[HẾT BÀI]':
                 for pt in [p.strip() for p in m.get('wire', '').split('+')]:
                     if "Sát nhau" in pt: w_c["Sát nhau"] += 1
                     elif "PL" in pt: w_c["PL"] += 1
                     elif "Mức" in pt:
                         tk = pt.split(' ')
-                        if tk[0] == 'Mức': w_c[f"Mức {tk[1]}"] += 1
-                        else: w_c[f"Mức {tk[2]}"] = w_c.get(f"Mức {tk[2]}", 0) + int(tk[0])
+                        if len(tk) >= 2 and tk[0] == 'Mức': w_c[f"Mức {tk[1]}"] += 1
+                        elif len(tk) >= 3: w_c[f"Mức {tk[2]}"] = w_c.get(f"Mức {tk[2]}", 0) + int(tk[0])
+
+        # Sắp xếp để lấy Top 10
+        cluster_stats.sort(key=lambda x: x['note_count'], reverse=True)
+        top_10_clusters = cluster_stats[:10]
+        max_notes = top_10_clusters[0]['note_count'] if top_10_clusters else 0
+        max_notes_cluster_id = top_10_clusters[0]['id'] if top_10_clusters else "N/A"
+
+        s_ov = a_s(self.stats_scroll_frame, "📈 Tổng Quan")
+        ae(s_ov, "Tổng số cụm:", f"{tot_c} cụm")
+        ae(s_ov, "Tổng số nốt nhạc:", f"{t_n} nốt")
+        ae(s_ov, "Tổng thời gian:", b_ts)
+        
+        # --- HIỂN THỊ THÊM DỮ LIỆU ---
+        ae(s_ov, "Số nốt cao nhất / 1 cụm:", f"{max_notes} nốt (Cụm {max_notes_cluster_id})")
+        ae(s_ov, "Nhiều loại nhạc cụ nhất:", f"{max_inst_count} loại (Cụm {max_inst_cluster_id})")
+        
+        btn_top10 = ctk.CTkButton(s_ov, text="🏆 Xem Top 10 Cụm Dày Nốt Nhất", command=lambda: self.show_top_10_clusters(top_10_clusters))
+        btn_top10.pack(pady=(10, 15))
+
+        s_w  = a_s(self.stats_scroll_frame, "🔌 Thống Kê Dây Nối")
+        for lvl in range(5, -1, -1): ae(s_w, f"Tổng số Mức {lvl}:", f"{w_c.get(f'Mức {lvl}', 0)} dây")
+        ae(s_w, "Tổng số dây 1 PL:", f"{w_c['PL']} dây"); ae(s_w, "Tổng số dây 'Sát nhau':", f"{w_c['Sát nhau']} dây")
+        pf = ctk.CTkFrame(s_w, fg_color="transparent", height=300); pf.pack(fill="x", expand=True, pady=10, padx=5); self.generate_wire_pie_chart(pf, w_c)
+        s_ins = a_s(self.stats_scroll_frame, "🎼 Thống Kê Nhạc Cụ")
+        
+        inst_f = ctk.CTkFrame(s_ins, fg_color="transparent", height=300); inst_f.pack(fill="x", expand=True, pady=10, padx=5); self.generate_instrument_bar_chart(inst_f, i_n_c)
+        
+        for inm, c in sorted(i_n_c.items(), key=lambda x: x[1], reverse=True): 
+            if c > 0: ae(s_ins, f"{inm}:", f"{c} nốt")
 
         s_ov = a_s(self.stats_scroll_frame, "📈 Tổng Quan"); ae(s_ov, "Tổng số cụm:", f"{tot_c} cụm"); ae(s_ov, "Tổng số nốt nhạc:", f"{t_n} nốt"); ae(s_ov, "Tổng thời gian:", b_ts)
         s_w  = a_s(self.stats_scroll_frame, "🔌 Thống Kê Dây Nối")
@@ -862,6 +935,30 @@ class MiniWorldConverterApp(ctk.CTk):
         
         for inm, c in sorted(i_n_c.items(), key=lambda x: x[1], reverse=True): 
             if c > 0: ae(s_ins, f"{inm}:", f"{c} nốt")
+    
+    def show_top_10_clusters(self, top_10_data):
+        if hasattr(self, 'top10_window') and self.top10_window.winfo_exists():
+            self.top10_window.focus()
+            return
+            
+        self.top10_window = ctk.CTkToplevel(self)
+        self.top10_window.title("Top 10 Cụm Nốt")
+        self.top10_window.geometry("350x450")
+        self.top10_window.transient(self)
+        
+        ctk.CTkLabel(self.top10_window, text="🏆 BẢNG XẾP HẠNG CỤM NỐT", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=15)
+        
+        for i, c in enumerate(top_10_data):
+            f = ctk.CTkFrame(self.top10_window, fg_color="transparent")
+            f.pack(fill="x", padx=20, pady=5)
+            
+            ctk.CTkLabel(f, text=f"#{i+1} - Cụm {c['id']}", font=ctk.CTkFont(weight="bold")).pack(side="left")
+            
+            # Nút đi thẳng đến Cụm đó trên giao diện
+            btn_jump = ctk.CTkButton(f, text="Đến", width=50, height=24, command=lambda idx=int(c['id'])-1: self.jump_to_step(idx, auto_play_note=True))
+            btn_jump.pack(side="right", padx=(10, 0))
+            
+            ctk.CTkLabel(f, text=f"{c['note_count']} nốt").pack(side="right")
 
     def _update_time_display(self, c_ms):
         if not hasattr(self, 'lbl_time') or not self.lbl_time: return
@@ -932,7 +1029,8 @@ class MiniWorldConverterApp(ctk.CTk):
             if v > 0: lbls.append(k); szs.append(v)
         if not szs: return ctk.CTkLabel(p, text="Không có dữ liệu.").pack(pady=20)
         try:
-            fg = Figure(figsize=(5, 4), dpi=100); fg.patch.set_facecolor(self.COLOR_BG_MAIN); ax = fg.add_subplot(111)
+            # Đã xóa self. trước COLOR_BG_MAIN
+            fg = Figure(figsize=(5, 4), dpi=100); fg.patch.set_facecolor(COLOR_BG_MAIN); ax = fg.add_subplot(111)
             ex = [0.1 if i == szs.index(max(szs)) else 0 for i in range(len(szs))]
             ws, _, at = ax.pie(szs, explode=ex, labels=None, autopct='%1.1f%%', shadow=False, startangle=140, pctdistance=0.85, wedgeprops={'edgecolor': 'white'})
             for t in at: t.set_color('white'); t.set_fontsize(10); t.set_fontweight('bold')
@@ -948,7 +1046,8 @@ class MiniWorldConverterApp(ctk.CTk):
         szs = [x[1] for x in sc if x[1] > 0]
         if not szs: return
         try:
-            fg = Figure(figsize=(5, max(4, len(lbls) * 0.4)), dpi=100); fg.patch.set_facecolor(self.COLOR_BG_MAIN); ax = fg.add_subplot(111); ax.set_facecolor(self.COLOR_BG_SECTION)
+            # Đã xóa self. trước COLOR_BG_MAIN và COLOR_BG_SECTION
+            fg = Figure(figsize=(5, max(4, len(lbls) * 0.4)), dpi=100); fg.patch.set_facecolor(COLOR_BG_MAIN); ax = fg.add_subplot(111); ax.set_facecolor(COLOR_BG_SECTION)
             yp = np.arange(len(lbls)); ax.barh(yp, szs, align='center', color=self.COLOR_SYNTH); ax.set_yticks(yp, labels=lbls); ax.invert_yaxis()
             ax.set_xlabel('Số Lượng Nốt', color='white'); ax.set_title('Phân Bố Nốt Nhạc', color='white', fontweight='bold')
             ax.tick_params(axis='x', colors='white'); ax.tick_params(axis='y', colors='white')
