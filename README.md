@@ -41,7 +41,7 @@ Một công cụ được thiết kế để giúp người chơi Mini World: Bl
 Để chạy ứng dụng, bạn cần cài đặt các thư viện Python sau:
 
 ```bash
-pip install customtkinter mido pygame numpy
+pip install customtkinter mido pygame numpy matplotlib
 ```
 
 ---
