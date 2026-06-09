@@ -679,8 +679,15 @@ class MiniWorldConverterApp(ctk.CTk):
                     if self.mw_channel_programs.get(ch) != target_prog: 
                         self.midi_out.set_instrument(target_prog, ch)
                         self.mw_channel_programs[ch] = target_prog
-                    self.midi_out.note_on(n, vel, ch)
-                    n_off.append((n, ch))
+                    
+                    play_note = n
+                    if is_mw_mode:
+                        # FIX: Đưa nốt nhạc về khoảng nghe được của Mini World (MIDI 48-83) để khớp sơ đồ
+                        while play_note < 48: play_note += 12
+                        while play_note > 83: play_note -= 12
+
+                    self.midi_out.note_on(play_note, vel, ch)
+                    n_off.append((play_note, ch))
         if n_off:
             def t_off(): time.sleep(0.15); [self.midi_out.note_off(nt, 0, c) for nt, c in n_off]
             threading.Thread(target=t_off, daemon=True).start()
@@ -795,6 +802,12 @@ class MiniWorldConverterApp(ctk.CTk):
                                                 self.midi_out.write_short(0b10110000 | om.channel, 91, 127)
                                                 
                                         nt = om.note + self.transpose_semitones
+
+                                        if is_mw_mode:
+                                            # FIX: Áp dụng dịch chuyển quãng tám cho chế độ Mini World để khớp với sơ đồ
+                                            while nt < 48: nt += 12
+                                            while nt > 83: nt -= 12
+
                                         if 0 <= nt <= 127:
                                             self.midi_out.write_short(om.bytes()[0], nt, vel)
                                 except: pass
