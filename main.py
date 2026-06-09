@@ -35,7 +35,7 @@ COLOR_SECONDARY_HOVER  = "#5a6268"
 # ==============================================================================================
 MW_SYNTH      = {"Piano": 0, "Guitar": 1, "Harp": 2, "Violin": 3, "Trumpet": 4, "Recorder": 5, "Oud": 6, "Guitar Mộc": 7}
 MW_ELECTRONIC = {"Guitar Bass Điện": 0, "Pluck Synth": 1, "Stylophone": 3, "Chuông Điện Tử": 5, "Harpsichord": 7}
-MW_DRUMS      = {"Bass": 0, "Floor tom": 1, "Tom-tom": 2, "Lẫy": 3, "Hi-hat (đóng)": 4, "Chũm choẹ trung": 5, "Chũm choẹ to": 6, "Jam-block": 7}
+MW_DRUMS      = {"Bass": 0, "Floor tom": 1, "Tom-tom": 2, "Lẫy": 3, "Hi-hat (đóng)": 4, "Chũm choẹ trung": 6, "Chũm choẹ to": 5, "Jam-block": 7}
 
 GM_DRUM_MAP = {
     35: "Acoustic Bass Drum", 36: "Bass Drum 1",  37: "Side Stick",     38: "Acoustic Snare",
