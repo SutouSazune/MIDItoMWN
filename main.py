@@ -437,7 +437,7 @@ class MiniWorldConverterApp(ctk.CTk):
         self.top_bar.pack(fill="x", padx=10, pady=5)
         self.btn_back = ctk.CTkButton(self.top_bar, text="← Tệp", width=100, corner_radius=8, fg_color=COLOR_BG_MAIN, hover_color="#3a3a3a", cursor="hand2", command=self.back_to_input)
         self.btn_back.pack(side="left")
-        self.btn_export = ctk.CTkButton(self.top_bar, text="💾 Xuất Sơ Đồ Dọc (.txt)", width=180, command=self.export_vertical_to_txt)
+        self.btn_export = ctk.CTkButton(self.top_bar, text="Xuất Sơ Đồ Dọc (.txt)", width=180, command=self.export_vertical_to_txt)
         self.btn_export.pack(side="left", padx=(10, 0))
         self.lbl_now_playing = ctk.CTkLabel(self.top_bar, text="", font=ctk.CTkFont(weight="bold", size=20))
         self.lbl_now_playing.pack(side="left", fill="x", expand=True)
@@ -460,7 +460,7 @@ class MiniWorldConverterApp(ctk.CTk):
         self.tab_vert = self.tabview.add("Sơ đồ Dọc")
         self.tab_horz = self.tabview.add("Sơ đồ Ngang")
         self.tab_step = self.tabview.add("Sơ đồ Đơn")
-        self.tab_stats = self.tabview.add("📊 Thống Kê")
+        self.tab_stats = self.tabview.add("Thống kê")
         
         self.txt_vert = ctk.CTkTextbox(self.tab_vert, font=ctk.CTkFont(family="Consolas", size=16), wrap="none", cursor="hand2")
         self.txt_vert.pack(fill="both", expand=True, padx=5, pady=5)
