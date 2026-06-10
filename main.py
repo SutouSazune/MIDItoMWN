@@ -107,47 +107,146 @@ class MidiProcessor:
         return og_notes, evts, meta
 
 class BlueprintGenerator:
-    def create_blueprint(self, og_notes, ch_map, sel_inst, trans_semi, mw_dr_gm):
-        tg_notes = [n for n in og_notes if ch_map[n['map_key']]["display_name"] in sel_inst]
+    def create_blueprint(self, og_notes, ch_map, sel_inst, trans_semi, mw_dr_gm, algorithm_mode="CPU (Ổn định)", cp_module=None):
+        tg_notes = [n for n in og_notes if ch_map.get(n['map_key']) and ch_map[n['map_key']]["display_name"] in sel_inst]
         if not tg_notes: return []
-        gps, cur_g, bp = [], [0], []
-        for i in range(1, len(tg_notes)):
-            if tg_notes[i]['time'] - tg_notes[cur_g[-1]]['time'] < CLUSTER_TIME_THRESHOLD: cur_g.append(i)
-            else: gps.append(cur_g); cur_g = [i]
-        gps.append(cur_g)
-        for gi, grp in enumerate(gps):
-            t_sync, inst_d = tg_notes[grp[0]]['time'], {}
-            for idx in grp:
-                n, minfo = tg_notes[idx], ch_map[tg_notes[idx]['map_key']]
+
+        gps = []
+        gpu_precalculated = False
+
+        if algorithm_mode == "GPU (Thử nghiệm)" and cp_module is not None and len(tg_notes) > 1:
+            try:
+                import numpy as np
+                
+                # 1. Chuyển toàn bộ dữ liệu cần thiết thành mảng NumPy trước khi đẩy lên GPU
+                times_cpu = np.array([n['time'] for n in tg_notes], dtype=np.float64)
+                notes_cpu = np.array([n['note'] for n in tg_notes], dtype=np.int32)
+                is_drum_cpu = np.array([1 if ch_map[n['map_key']]["type"] == "Drum" else 0 for n in tg_notes], dtype=np.int32)
+
+                # 2. Đẩy một mẻ duy nhất lên VRAM
+                times_gpu = cp_module.asarray(times_cpu)
+                notes_gpu = cp_module.asarray(notes_cpu)
+                is_drum_gpu = cp_module.asarray(is_drum_cpu)
+
+                # 3. Tính toán gom cụm song song
+                diffs = cp_module.diff(times_gpu)
+                new_group_flags = cp_module.zeros(len(tg_notes), dtype=cp_module.int32)
+                new_group_flags[1:] = (diffs >= CLUSTER_TIME_THRESHOLD).astype(cp_module.int32)
+
+                # 4. CUDA C++ Kernel: Xử lý Pitch, phân quãng và chia khối (Trầm/Trung/Cao) trực tiếp bằng GPU
+                # Đây là thứ tạo ra sự khác biệt đẳng cấp, thay thế vòng lặp while chậm chạp trên CPU
+                pitch_kernel = cp_module.ElementwiseKernel(
+                    'int32 notes, int32 trans_semi, int32 is_drum',  # Input
+                    'int32 fn, int32 block_type, int32 note_mod',    # Output
+                    '''
+                    fn = notes + trans_semi;
+                    int mwn = fn;
+                    if (is_drum == 0) {
+                        // Tính toán ép quãng cho Mini World song song trên hàng ngàn luồng
+                        while (mwn < 48) { mwn += 12; }
+                        while (mwn > 83) { mwn -= 12; }
+                        
+                        // Xác định Block
+                        if (mwn <= 59) { block_type = 0; }        // Trầm
+                        else if (mwn <= 71) { block_type = 1; }   // Trung
+                        else { block_type = 2; }                  // Cao
+                        
+                        note_mod = mwn % 12;
+                    }
+                    ''',
+                    'mw_pitch_processor'
+                )
+
+                # Kích nổ Kernel
+                fn_gpu, block_type_gpu, note_mod_gpu = pitch_kernel(notes_gpu, trans_semi, is_drum_gpu)
+
+                # 5. Kéo dữ liệu ĐÃ XỬ LÝ về CPU một lần duy nhất
+                fn_cpu = fn_gpu.get()
+                block_type_cpu = block_type_gpu.get()
+                note_mod_cpu = note_mod_gpu.get()
+                split_flags_cpu = new_group_flags.get()
+
+                # Phân tách mảng dựa trên cờ
+                split_indices = np.where(split_flags_cpu == 1)[0]
+                gps = [g.tolist() for g in np.split(np.arange(len(tg_notes)), split_indices)]
+                gpu_precalculated = True
+
+            except Exception as e:
+                print(f"Lỗi tăng tốc GPU, quay về CPU. Chi tiết: {e}")
+                algorithm_mode = "CPU (Ổn định)"
+
+        # FALLBACK: Nếu CPU mode hoặc GPU tạch
+        if algorithm_mode == "CPU (Ổn định)" or not gps:
+            import numpy as np
+            if len(tg_notes) > 1:
+                times_cpu = np.array([n['time'] for n in tg_notes], dtype=np.float64)
+                diffs = np.diff(times_cpu)
+                split_indices = np.where(diffs >= CLUSTER_TIME_THRESHOLD)[0] + 1
+                gps = [g.tolist() for g in np.split(np.arange(len(tg_notes)), split_indices)]
+            elif tg_notes:
+                gps = [[0]]
+
+        # Tạo Blueprint
+        bp = []
+        block_names = {0: "Trầm", 1: "Trung", 2: "Cao"}
+
+        for gi, grp_indices in enumerate(gps):
+            if not grp_indices: continue
+            t_sync = tg_notes[grp_indices[0]]['time']
+            inst_d = {}
+
+            for idx in grp_indices:
+                n = tg_notes[idx]
+                minfo = ch_map[n['map_key']]
                 inm = minfo["display_name"]
-                if inm not in inst_d: inst_d[inm] = {"notes_raw": [], "notes": [], "type": minfo["type"], "name": minfo["name"]}
+
+                if inm not in inst_d: 
+                    inst_d[inm] = {"notes_raw": [], "notes": [], "type": minfo["type"], "name": minfo["name"]}
+
                 if minfo["type"] == "Drum":
                     inst_d[inm]["notes_raw"].append(f"[Trống] Gõ {minfo['tap']}")
                     inst_d[inm]["notes"].append({'midi': mw_dr_gm.get(minfo['name'], 60), 'channel': 9, 'og_midi': n['note'], 'program': n.get('program', 0), 'velocity': n.get('velocity', 100)})
                 else:
-                    fn = n['note'] + trans_semi
-                    mwn = fn
-                    while mwn < 48: mwn += 12
-                    while mwn > 83: mwn -= 12
-                    b = "Trầm" if mwn <= 59 else "Trung" if mwn <= 71 else "Cao"
-                    inst_d[inm]["notes_raw"].append(f"Khối {b}: {mwn % 12}")
+                    # Nếu GPU đã xử lý, chỉ việc nhặt kết quả ra ráp chuỗi
+                    if gpu_precalculated:
+                        fn = int(fn_cpu[idx])
+                        b_str = block_names[int(block_type_cpu[idx])]
+                        n_mod = int(note_mod_cpu[idx])
+                    # Nếu chạy CPU, phải tính bằng vòng lặp thủ công
+                    else:
+                        fn = n['note'] + trans_semi
+                        mwn = fn
+                        while mwn < 48: mwn += 12
+                        while mwn > 83: mwn -= 12
+                        b_str = "Trầm" if mwn <= 59 else "Trung" if mwn <= 71 else "Cao"
+                        n_mod = mwn % 12
+
+                    inst_d[inm]["notes_raw"].append(f"Khối {b_str}: {n_mod}")
                     inst_d[inm]["notes"].append({'midi': fn, 'channel': n['channel'], 'og_midi': fn, 'program': n.get('program', 0), 'velocity': n.get('velocity', 100)})
+
+            # Xóa nốt trùng lặp trong cùng một cụm
             for nm in inst_d:
                 inst_d[nm]["notes_raw"] = list(dict.fromkeys(inst_d[nm]["notes_raw"]))
                 inst_d[nm]["notes"] = list({(d['og_midi'], d['channel']): d for d in inst_d[nm]["notes"]}.values())
+
+            # Thuật toán nội suy dây nối (Wire logic) giữ nguyên
             wstr = "[HẾT BÀI]"
             if gi < len(gps) - 1:
-                w_ms = max(0, ((tg_notes[gps[gi+1][0]]['time'] - t_sync) * HE_SO_TOC_DO) - 50)
-                if w_ms < 30: wstr = "Sát nhau"
-                elif w_ms < 100: wstr = "1 PL"
-                elif w_ms < MUC0_START_W_MS: wstr = f"Mức {5 - (int(round(w_ms / 150.0)) - 1)}"
-                else:
-                    pts = [f"{int(w_ms // MUC0_START_W_MS)} Mức 0"] if int(w_ms // MUC0_START_W_MS) > 0 else []
-                    rem = w_ms % MUC0_START_W_MS
-                    if rem >= 100: pts.append(f"1 Mức {5 - (int(round(rem / 150.0)) - 1)}")
-                    elif rem >= 30: pts.append("1 PL")
-                    wstr = " + ".join(pts) if pts else "Mức 0"
+                next_grp_indices = gps[gi+1]
+                if next_grp_indices:
+                    w_ms = max(0, ((tg_notes[next_grp_indices[0]]['time'] - t_sync) * HE_SO_TOC_DO) - 50)
+                    if w_ms < 30: wstr = "Sát nhau"
+                    elif w_ms < 100: wstr = "1 PL"
+                    elif w_ms < MUC0_START_W_MS: wstr = f"Mức {5 - (int(round(w_ms / 150.0)) - 1)}"
+                    else:
+                        pts = [f"{int(w_ms // MUC0_START_W_MS)} Mức 0"] if int(w_ms // MUC0_START_W_MS) > 0 else []
+                        rem = w_ms % MUC0_START_W_MS
+                        if rem >= 100: pts.append(f"1 Mức {5 - (int(round(rem / 150.0)) - 1)}")
+                        elif rem >= 30: pts.append("1 PL")
+                        wstr = " + ".join(pts) if pts else "Mức 0"
+            
             bp.append({"id": f"{gi+1:03d}", "sync_time": t_sync, "instruments": inst_d, "wire": wstr})
+            
         return bp
 
 # ==============================================================================================
@@ -156,14 +255,42 @@ class BlueprintGenerator:
 class SettingsWindow(ctk.CTkToplevel):
     def __init__(self, master):
         super().__init__(master); self.transient(master); self.app = master
-        self.title("Cài Đặt"); self.geometry("400x300")
+        self.title("Cài Đặt"); self.geometry("550x650")
         
-        ctk.CTkLabel(self, text="Chủ đề màu sắc:", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 5))
-        cb_theme = ctk.CTkComboBox(self, values=["Mặc định (Cyan)", "Vàng Gold", "Hồng Ruby"], command=self.app._apply_theme)
-        cb_theme.set(self.app.current_theme_name); cb_theme.pack(pady=5)
+        scroll_frame = ctk.CTkScrollableFrame(self)
+        scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
         
-        ctk.CTkLabel(self, text="Nâng cao:", font=ctk.CTkFont(weight="bold")).pack(pady=(30, 5))
-        ctk.CTkButton(self, text="Trình Quản Lý Bộ Trống", command=self.open_drum_kit_manager).pack(pady=10)
+        ctk.CTkLabel(scroll_frame, text="Cài đặt cửa sổ", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(10, 5), anchor="w", padx=10)
+        ctk.CTkSwitch(scroll_frame, text="Luôn hiển thị trên cùng (Always on Top)", variable=self.app.always_on_top, command=self.app.toggle_always_on_top).pack(pady=10, padx=20, anchor="w")
+
+        ctk.CTkLabel(scroll_frame, text="Giao diện", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 5), anchor="w", padx=10)
+        cb_theme = ctk.CTkComboBox(scroll_frame, values=["Mặc định (Cyan)", "Vàng Gold", "Hồng Ruby"], command=self.app._apply_theme)
+        cb_theme.set(self.app.current_theme_name); cb_theme.pack(pady=5, padx=20)
+        
+        ctk.CTkLabel(scroll_frame, text="Tăng tốc thuật toán", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 5), anchor="w", padx=10)
+        algo_mode_seg = ctk.CTkSegmentedButton(scroll_frame, values=["CPU (Ổn định)", "GPU (Thử nghiệm)"], variable=self.app.algorithm_mode)
+        if not self.app.has_gpu:
+            algo_mode_seg.configure(state="disabled")
+            self.app.algorithm_mode.set("CPU (Ổn định)")
+        algo_mode_seg.pack(pady=5, padx=20)
+
+        gpu_info_frame = ctk.CTkFrame(scroll_frame, fg_color=COLOR_BG_SECTION)
+        gpu_info_frame.pack(fill="x", padx=10, pady=5)
+        status_text = "✅ GPU đã sẵn sàng (CuPy)" if self.app.has_gpu else "⚠️ GPU không khả dụng"
+        status_color = COLOR_SUCCESS if self.app.has_gpu else COLOR_ACCENT_2
+        ctk.CTkLabel(gpu_info_frame, text=status_text, text_color=status_color, font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5), padx=15)
+        
+        ctk.CTkLabel(gpu_info_frame, text="Để tăng tốc xử lý các file MIDI lớn, bạn cần thực hiện các bước sau:", wraplength=500, justify="left").pack(pady=(5, 5), padx=15)
+        ctk.CTkLabel(gpu_info_frame, text="1. Cài đặt NVIDIA CUDA Toolkit từ trang chủ của NVIDIA.", justify="left", anchor="w").pack(fill="x", padx=15)
+        ctk.CTkLabel(gpu_info_frame, text="2. Mở CMD và gõ 'nvcc --version' để kiểm tra phiên bản CUDA đã cài.", wraplength=500, justify="left").pack(fill="x", padx=15)
+        ctk.CTkLabel(gpu_info_frame, text="3. Cài đặt CuPy bằng lệnh tương ứng với phiên bản CUDA của bạn. Ví dụ:", wraplength=500, justify="left").pack(fill="x", padx=15)
+        ctk.CTkLabel(gpu_info_frame, text="   - Với CUDA 12.x, dùng lệnh: pip install cupy-cuda12x", font=ctk.CTkFont(family="Consolas"), justify="left", anchor="w").pack(fill="x", padx=25)
+        ctk.CTkLabel(gpu_info_frame, text="   - Với CUDA 11.x, dùng lệnh: pip install cupy-cuda11x", font=ctk.CTkFont(family="Consolas"), justify="left", anchor="w").pack(fill="x", padx=25)
+        ctk.CTkLabel(gpu_info_frame, text="Lưu ý: Tuyệt đối KHÔNG dùng 'pip install cupy'. Lệnh này sẽ gây lỗi nếu không có môi trường build.", wraplength=500, justify="left", font=ctk.CTkFont(size=12, weight="bold"), text_color=COLOR_DANGER).pack(pady=(5, 5), padx=15)
+        ctk.CTkLabel(gpu_info_frame, text="Lưu ý: Hỗ trợ cho GPU AMD và Intel chưa có sẵn và sẽ được xem xét trong tương lai.", wraplength=500, justify="left", font=ctk.CTkFont(size=12, slant="italic"), text_color="gray").pack(pady=(5, 10), padx=15)
+
+        ctk.CTkLabel(scroll_frame, text="Nâng cao", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 5), anchor="w", padx=10)
+        ctk.CTkButton(scroll_frame, text="Trình Quản Lý Bộ Trống", command=self.open_drum_kit_manager).pack(pady=10, padx=20, anchor="w")
 
     def open_drum_kit_manager(self):
         if not hasattr(self, 'drum_kit_window') or not self.drum_kit_window.winfo_exists(): self.drum_kit_window = DrumKitManager(self.app)
@@ -222,11 +349,23 @@ class MiniWorldConverterApp(ctk.CTk):
         super().__init__()
         self.last_directory        = "."
         self.window_geometry       = "1400x950"
+        self.always_on_top         = ctk.BooleanVar(value=False)
+        self.has_gpu = False
+        self.cupy = None
+        try:
+            import cupy
+            if cupy.is_available():
+                self.cupy = cupy
+                self.has_gpu = True
+                print("CuPy GPU acceleration is available.")
+        except (ImportError, ModuleNotFoundError):
+            print("CuPy not found. GPU acceleration will be disabled.")
+        self.algorithm_mode = ctk.StringVar(value="CPU (Ổn định)")
         self.load_app_config()
         self.title(APP_TITLE)
         self.geometry(self.window_geometry)
+        self.attributes('-topmost', self.always_on_top.get())
         
-        pygame.mixer.pre_init(44100, -16, 2, 1024)
         pygame.init()
         if not pygame.mixer.get_init(): pygame.mixer.init(44100, -16, 2, 1024)
         self.midi_out, self.has_midi_output = None, False
@@ -236,9 +375,6 @@ class MiniWorldConverterApp(ctk.CTk):
                 self.midi_out = pygame.midi.Output(pygame.midi.get_default_output_id())
                 self.has_midi_output = True
         except: pass
-        pygame.mixer.set_num_channels(64)
-        self.synth_channel = pygame.mixer.Channel(0)
-        self.synth_channel.set_volume(1)
 
         self.processor             = MidiProcessor()
         self.generator             = BlueprintGenerator()
@@ -268,6 +404,10 @@ class MiniWorldConverterApp(ctk.CTk):
         self.playback_offset      = 0  
         self.current_preview_mode = "🎵 Nhạc MIDI Gốc"
         self.start_perf, self.start_offset, self.next_orig_idx, self.next_mw_idx = 0, 0, 0, 0
+        # LÕI TỐI ƯU PREVIEW: Quản lý trạng thái nốt nhạc đang phát thử để tránh spam thread và lỗi âm thanh
+        self.preview_note_off_timer = None
+        self.preview_notes_on     = []
+        self.preview_lock         = threading.Lock()
         self.top_10_notes_expanded = ctk.BooleanVar(value=False)
         self.top_10_inst_expanded = ctk.BooleanVar(value=False)
         self.btn_toggle_notes = None
@@ -297,11 +437,20 @@ class MiniWorldConverterApp(ctk.CTk):
                     cfg = json.load(f)
                     self.window_geometry = cfg.get("window_geometry", "1400x950")
                     self.last_directory = cfg.get("last_directory", ".") if os.path.isdir(cfg.get("last_directory", ".")) else "."
+                    self.always_on_top.set(cfg.get("always_on_top", False))
+                    if self.has_gpu:
+                        self.algorithm_mode.set(cfg.get("algorithm_mode", "CPU (Ổn định)"))
         except: pass
 
     def save_app_config(self):
         try:
-            with open(CONFIG_FILE, 'w') as f: json.dump({"window_geometry": self.geometry(), "last_directory": self.last_directory}, f, indent=4)
+            config_data = {
+                "window_geometry": self.geometry(),
+                "last_directory": self.last_directory,
+                "always_on_top": self.always_on_top.get(),
+                "algorithm_mode": self.algorithm_mode.get()
+            }
+            with open(CONFIG_FILE, 'w') as f: json.dump(config_data, f, indent=4)
         except: pass
 
     def on_closing(self):
@@ -579,7 +728,7 @@ class MiniWorldConverterApp(ctk.CTk):
         if cached_bp is not None:
             self.active_blueprint = cached_bp
         else:
-            self.active_blueprint = self.generator.create_blueprint(self.original_notes, self.channel_map, self.selected_instruments, self.transpose_semitones, self.mw_drum_to_gm_note)
+            self.active_blueprint = self.generator.create_blueprint(self.original_notes, self.channel_map, self.selected_instruments, self.transpose_semitones, self.mw_drum_to_gm_note, self.algorithm_mode.get(), self.cupy)
             with self.cache_lock:
                 self.blueprint_cache[cache_key] = self.active_blueprint
 
@@ -614,7 +763,7 @@ class MiniWorldConverterApp(ctk.CTk):
             with self.cache_lock:
                 if cache_key in self.blueprint_cache: continue
             
-            blueprint = self.generator.create_blueprint(self.original_notes, self.channel_map, all_instruments, pitch, self.mw_drum_to_gm_note)
+            blueprint = self.generator.create_blueprint(self.original_notes, self.channel_map, all_instruments, pitch, self.mw_drum_to_gm_note, self.algorithm_mode.get(), self.cupy)
             with self.cache_lock: self.blueprint_cache.setdefault(cache_key, blueprint)
             time.sleep(0.2)
 
@@ -625,8 +774,7 @@ class MiniWorldConverterApp(ctk.CTk):
                 
                 with self.cache_lock:
                     if cache_key in self.blueprint_cache: continue
-
-                blueprint = self.generator.create_blueprint(self.original_notes, self.channel_map, subset_instruments, current_pitch, self.mw_drum_to_gm_note)
+                blueprint = self.generator.create_blueprint(self.original_notes, self.channel_map, subset_instruments, current_pitch, self.mw_drum_to_gm_note, self.algorithm_mode.get(), self.cupy)
                 with self.cache_lock: self.blueprint_cache.setdefault(cache_key, blueprint)
                 time.sleep(0.2)
 
@@ -642,7 +790,21 @@ class MiniWorldConverterApp(ctk.CTk):
         for m in bp:
             i_s = list(m['instruments'].keys())
             if not i_s: continue
-            vl.append(f"[ CỤM {m['id']} ]\n"); vl.append(f"|{'|'.join([f'{i.replace("🎹 ", "").replace("🥁 ", "").replace("⚡ ", ""):^{cw}}' for i in i_s])}|\n")
+            vl.append(f"[ CỤM {m['id']} ]\n")
+
+            # LÕI TỐI ƯU HIỂN THỊ: Chuyển đổi icon sang text cho Sơ đồ Dọc và canh lề.
+            # Theo yêu cầu, Sơ đồ Dọc sẽ dùng text prefix thay cho icon để đảm bảo canh lề.
+            header_parts = []
+            for h_original in i_s:
+                h_new = h_original
+                if '🎹 ' in h_new: h_new = h_new.replace('🎹 ', '[Tổng hợp] ')
+                elif '⚡ ' in h_new: h_new = h_new.replace('⚡ ', '[Điện tử] ')
+                elif '🥁 ' in h_new: h_new = h_new.replace('🥁 ', '[Trống] ')
+                
+                # Canh giữa tự động với f-string vì không còn ký tự rộng (icon)
+                header_parts.append(f'{h_new:^{cw}}')
+            
+            vl.append(f"|{'|'.join(header_parts)}|\n")
             mr = max(len(d['notes_raw']) for d in m['instruments'].values())
             for r in range(mr): vl.append(f"|{'|'.join([f'{m["instruments"][i]["notes_raw"][r] if r < len(m["instruments"][i]["notes_raw"]) else "":^{cw}}' for i in i_s])}|\n")
             vl.append("-" * (len(i_s) * (cw + 1) + 1) + "\n"); vl.append(f"➔ Dây tiếp: {m['wire']}\n\n")
@@ -682,41 +844,62 @@ class MiniWorldConverterApp(ctk.CTk):
         if tw == 0 or cw <= 1: return
         sc = cw / tw
         for i, m in enumerate(self.active_blueprint): self.minimap_canvas.create_rectangle(i*(self.card_width+80)*sc, 5, (i*(self.card_width+80)+self.card_width)*sc, 45, fill="#242424", outline="#555555")
-        self.minimap_viewport = self.minimap_canvas.create_rectangle(0, 2, 0, 48, outline=self.COLOR_ACCENT_1, width=2)
+        self.minimap_viewport = self.minimap_canvas.create_rectangle(0, 2, 0, 48, outline=self.color_accent_1, width=2)
         self.minimap_canvas.bind("<Button-1>", self._on_minimap_click_drag); self.minimap_canvas.bind("<B1-Motion>", self._on_minimap_click_drag)
 
     def _update_minimap_viewport(self):
         sf, ef = self.canvas.xview(); mw = self.minimap_canvas.winfo_width()
         self.minimap_canvas.coords(self.minimap_viewport, sf * mw, 2, ef * mw, 48)
 
+    def _execute_note_off(self):
+        with self.preview_lock:
+            if self.has_midi_output:
+                for note, channel in self.preview_notes_on:
+                    try: self.midi_out.note_off(note, 0, channel)
+                    except: pass
+            self.preview_notes_on.clear()
+            self.preview_note_off_timer = None
+
     def play_mixed_instruments(self, inst_dict):
-        if not self.has_midi_output or not inst_dict: return
-        is_mw_mode = (self.current_preview_mode == "🎹 Mini World")
-        n_off = []
-        for i_nm, d in inst_dict.items():
-            for n_info in d['notes']:
-                n = n_info.get('og_midi', n_info['midi']); ch = n_info['channel']; prog = n_info.get('program', 0); vel = n_info.get('velocity', 100)
-                boost_factor = 1.3 if is_mw_mode else 1.15; vel = min(127, int(vel * boost_factor))
-                bn = d.get('name')
-                if not bn: continue
-                if is_mw_mode:
-                    self.midi_out.write_short(0b10110000 | ch, 91, 127) 
-                    self.midi_out.write_short(0b10110000 | ch, 7, 127)  
-                if d.get("type", "Synth") == "Drum" or ch == 9:
-                    play_note = n_info['midi'] if is_mw_mode else n_info['og_midi']
-                    self.midi_out.note_on(play_note, vel, 9); n_off.append((play_note, 9))
-                else:
-                    target_prog = self.mw_instrument_to_gm.get(bn, 0) if is_mw_mode else prog
-                    if self.mw_channel_programs.get(ch) != target_prog: 
-                        self.midi_out.set_instrument(target_prog, ch); self.mw_channel_programs[ch] = target_prog
-                    play_note = n
+        with self.preview_lock:
+            if self.preview_note_off_timer:
+                self.preview_note_off_timer.cancel()
+                self.preview_note_off_timer = None
+
+            if self.has_midi_output:
+                for note, channel in self.preview_notes_on:
+                    try: self.midi_out.note_off(note, 0, channel)
+                    except: pass
+            self.preview_notes_on.clear()
+
+            if not self.has_midi_output or not inst_dict: return
+
+            is_mw_mode = (self.current_preview_mode == "🎹 Mini World")
+            for i_nm, d in inst_dict.items():
+                for n_info in d['notes']:
+                    n = n_info.get('og_midi', n_info['midi']); ch = n_info['channel']; prog = n_info.get('program', 0); vel = n_info.get('velocity', 100)
+                    boost_factor = 1.3 if is_mw_mode else 1.15; vel = min(127, int(vel * boost_factor))
+                    bn = d.get('name')
+                    if not bn: continue
                     if is_mw_mode:
-                        while play_note < 48: play_note += 12
-                        while play_note > 83: play_note -= 12
-                    self.midi_out.note_on(play_note, vel, ch); n_off.append((play_note, ch))
-        if n_off:
-            def t_off(): time.sleep(0.15); [self.midi_out.note_off(nt, 0, c) for nt, c in n_off]
-            threading.Thread(target=t_off, daemon=True).start()
+                        self.midi_out.write_short(0b10110000 | ch, 91, 127) 
+                        self.midi_out.write_short(0b10110000 | ch, 7, 127)  
+                    if d.get("type", "Synth") == "Drum" or ch == 9:
+                        play_note = n_info['midi'] if is_mw_mode else n_info['og_midi']
+                        self.midi_out.note_on(play_note, vel, 9); self.preview_notes_on.append((play_note, 9))
+                    else:
+                        target_prog = self.mw_instrument_to_gm.get(bn, 0) if is_mw_mode else prog
+                        if self.mw_channel_programs.get(ch) != target_prog: 
+                            self.midi_out.set_instrument(target_prog, ch); self.mw_channel_programs[ch] = target_prog
+                        play_note = n
+                        if is_mw_mode:
+                            while play_note < 48: play_note += 12
+                            while play_note > 83: play_note -= 12
+                        self.midi_out.note_on(play_note, vel, ch); self.preview_notes_on.append((play_note, ch))
+            if self.preview_notes_on:
+                self.preview_note_off_timer = threading.Timer(0.2, self._execute_note_off)
+                self.preview_note_off_timer.daemon = True
+                self.preview_note_off_timer.start()
 
     def on_item_click(self, e=None, idx=None):
         if idx is not None:
@@ -749,7 +932,6 @@ class MiniWorldConverterApp(ctk.CTk):
         if self.is_playing:
             self.is_playing = False; self.is_paused = True; self.btn_play.configure(text="▶ Phát")
             if self.has_midi_output: [self.midi_out.write_short(0b10110000 | c, 123, 0) for c in range(16)]
-            self.synth_channel.stop(); self.playback_offset = self.start_offset + (time.perf_counter() - self.start_perf) * 1000.0 * self.playback_speed
         else:
             self.start_offset = self.playback_offset; self.start_perf = time.perf_counter(); self.is_playing = True; self.is_paused = False
             self.btn_play.configure(text="⏸ Tạm Dừng"); threading.Thread(target=self._audio_playback_thread, daemon=True).start(); self._ui_update_loop()
@@ -878,7 +1060,8 @@ class MiniWorldConverterApp(ctk.CTk):
             cf, lbl_title, note_lbls = self.pool_frames[i]
             cf.pack(side="left", expand=True, fill="both", padx=10)
             
-            lbl_title.configure(text=ins, text_color=COLOR_SYNTH if "🎹" in ins else COLOR_DRUM)
+            lbl_title.configure(text=ins, text_color=self.color_synth if "🎹" in ins else self.color_drum)
+            lbl_title.pack(pady=(5, 10))
             
             # Ẩn hết nốt cũ
             for nl in note_lbls: nl.pack_forget()
@@ -957,7 +1140,7 @@ class MiniWorldConverterApp(ctk.CTk):
         ctk.CTkLabel(note_stats_frame, text="Số nốt cao nhất / 1 cụm:", anchor="w").pack(side="left")
 
         ctk.CTkLabel(note_stats_frame, text=f"{max_notes} nốt (Cụm {max_notes_cluster_id})", anchor="e", font=ctk.CTkFont(weight="bold")).pack(side="right")
-        self.btn_toggle_notes = ctk.CTkButton(note_stats_frame, text="▶", width=28, height=24, command=self._toggle_top_10_notes_list, fg_color="transparent", hover_color="#444444", text_color=self.COLOR_ACCENT_1)
+        self.btn_toggle_notes = ctk.CTkButton(note_stats_frame, text="▶", width=28, height=24, command=self._toggle_top_10_notes_list, fg_color="transparent", hover_color="#444444", text_color=self.color_accent_1)
         self.btn_toggle_notes.pack(side="right", padx=(0, 5))
         self.top_10_notes_list_frame = ctk.CTkFrame(note_container, fg_color="transparent")
         self._render_top_10_list(self.top_10_notes_list_frame, top_10_note_clusters, "note_count", "nốt")
@@ -969,7 +1152,7 @@ class MiniWorldConverterApp(ctk.CTk):
         ctk.CTkLabel(inst_stats_frame, text="Nhiều loại nhạc cụ nhất:", anchor="w").pack(side="left")
 
         ctk.CTkLabel(inst_stats_frame, text=f"{max_inst_count} loại (Cụm {max_inst_cluster_id})", anchor="e", font=ctk.CTkFont(weight="bold")).pack(side="right")
-        self.btn_toggle_inst = ctk.CTkButton(inst_stats_frame, text="▶", width=28, height=24, command=self._toggle_top_10_inst_list, fg_color="transparent", hover_color="#444444", text_color=self.COLOR_ACCENT_1)
+        self.btn_toggle_inst = ctk.CTkButton(inst_stats_frame, text="▶", width=28, height=24, command=self._toggle_top_10_inst_list, fg_color="transparent", hover_color="#444444", text_color=self.color_accent_1)
         self.btn_toggle_inst.pack(side="right", padx=(0, 5))
         self.top_10_inst_list_frame = ctk.CTkFrame(inst_container, fg_color="transparent")
         self._render_top_10_list(self.top_10_inst_list_frame, top_10_inst_clusters, "inst_count", "loại")
@@ -1056,6 +1239,9 @@ class MiniWorldConverterApp(ctk.CTk):
         if not hasattr(self, 'settings_window') or not self.settings_window.winfo_exists(): self.settings_window = SettingsWindow(self)
         self.settings_window.focus()
 
+    def toggle_always_on_top(self):
+        self.attributes('-topmost', self.always_on_top.get())
+
     def _create_default_drum_map(self):
         m = {}
         for nt in range(35, 82):
@@ -1071,11 +1257,16 @@ class MiniWorldConverterApp(ctk.CTk):
 
     def _apply_theme(self, t, first_load=False):
         self.current_theme_name = t
-        if t == "Vàng Gold": self.COLOR_ACCENT_1, self.COLOR_SYNTH, self.COLOR_DRUM, self.COLOR_INFO, self.COLOR_INFO_HOVER = "#ffc107", "#ffb300", "#f06292", "#ffb300", "#e6a100"
-        elif t == "Hồng Ruby": self.COLOR_ACCENT_1, self.COLOR_SYNTH, self.COLOR_DRUM, self.COLOR_INFO, self.COLOR_INFO_HOVER = "#e91e63", "#ec407a", "#ab47bc", "#ec407a", "#d43a6f"
-        else: self.COLOR_ACCENT_1, self.COLOR_SYNTH, self.COLOR_DRUM, self.COLOR_INFO, self.COLOR_INFO_HOVER = "#00e5ff", "#17a2b8", "#e83e8c", "#17a2b8", "#138496"
+        if t == "Vàng Gold":
+            self.color_accent_1, self.color_synth, self.color_drum, self.color_info, self.color_info_hover = "#ffc107", "#ffb300", "#f06292", "#ffb300", "#e6a100"
+        elif t == "Hồng Ruby":
+            self.color_accent_1, self.color_synth, self.color_drum, self.color_info, self.color_info_hover = "#e91e63", "#ec407a", "#ab47bc", "#ec407a", "#d43a6f"
+        else:
+            self.color_accent_1, self.color_synth, self.color_drum, self.color_info, self.color_info_hover = COLOR_ACCENT_1, COLOR_SYNTH, COLOR_DRUM, COLOR_INFO, COLOR_INFO_HOVER
         if not first_load:
-            self.lbl_step_num.configure(text_color=self.COLOR_ACCENT_1); self.btn_select_all.configure(fg_color=self.COLOR_INFO, hover_color=self.COLOR_INFO_HOVER); self.btn_increase.configure(fg_color=self.COLOR_INFO)
+            self.lbl_step_num.configure(text_color=self.color_accent_1)
+            self.btn_select_all.configure(fg_color=self.color_info, hover_color=self.color_info_hover)
+            self.btn_increase.configure(fg_color=self.color_info)
             if self.active_blueprint: self.update_stats_tab(); self.render_active_sheet(); self.apply_sync_visuals()
 
     def generate_wire_pie_chart(self, p, wc):
@@ -1102,7 +1293,7 @@ class MiniWorldConverterApp(ctk.CTk):
         if not szs: return
         try:
             fg = Figure(figsize=(5, max(4, len(lbls) * 0.4)), dpi=100); fg.patch.set_facecolor(COLOR_BG_MAIN); ax = fg.add_subplot(111); ax.set_facecolor(COLOR_BG_SECTION)
-            yp = np.arange(len(lbls)); ax.barh(yp, szs, align='center', color=self.COLOR_SYNTH); ax.set_yticks(yp, labels=lbls); ax.invert_yaxis()
+            yp = np.arange(len(lbls)); ax.barh(yp, szs, align='center', color=self.color_synth); ax.set_yticks(yp, labels=lbls); ax.invert_yaxis()
             ax.set_xlabel('Số Lượng Nốt', color='white'); ax.set_title('Phân Bố Nốt Nhạc', color='white', fontweight='bold')
             ax.tick_params(axis='x', colors='white'); ax.tick_params(axis='y', colors='white')
             ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False); ax.spines['bottom'].set_color('gray'); ax.spines['left'].set_color('gray'); fg.tight_layout()
